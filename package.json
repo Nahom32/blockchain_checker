@@ -1,0 +1,14 @@
+{
+  "name": "blockchain_checker",
+  "version": "1.0.0",
+  "description": "This is a blockchain checker",
+  "main": "index.js",
+  "scripts": {
+    "test": "test"
+  },
+  "author": "NSG",
+  "license": "MIT",
+  "dependencies": {
+    "web3": "^4.9.0"
+  }
+}

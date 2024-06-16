@@ -13,32 +13,18 @@ async function verifyBlockchainIntegrity() {
     for (let i = 0; i <= latestBlockNumber; i++) {
       const block = await web3.eth.getBlock(i);
 
-      // Check for genesis block (Block 0)
-      if (i === 0 && block.parentHash === null) {
-        // Handle genesis block scenario
-        console.log(`Genesis Block ${i}:`);
-        console.log(`Hash: ${block.hash}`);
-        console.log(`-------------------`);
-        previousBlockHash = block.hash; // Genesis block has no parentHash
-        continue;
-      }
-
       
-      const expectedBlockHash = web3.utils.sha3(
-        web3.eth.abi.encodeParameters(
-          ['uint256', 'uint256', 'string', 'string', 'uint256'],
-          [block.number, block.timestamp, block.parentHash, block.miner, block.nonce]
-        )
-      );
-
-      // Compare expected hash with actual hash
-      if (block.hash !== expectedBlockHash) {
-        console.error(`Block ${i} hash does not match!`);
-        console.error(`Expected hash: ${expectedBlockHash}`);
-        console.error(`Actual hash: ${block.hash}`);
-        console.error(`Block details:`);
-        console.error(block);
-        return;
+      if (i === 0) {
+        if (block.parentHash === '0x0000000000000000000000000000000000000000000000000000000000000000') {
+          console.log(`Genesis Block ${i} is valid:`);
+          console.log(`Hash: ${block.hash}`);
+          console.log(`-------------------`);
+          previousBlockHash = block.hash; // Genesis block has no parentHash
+        } else {
+          console.error(`Genesis Block ${i} has an incorrect parent hash!`);
+          return;
+        }
+        continue;
       }
 
       // Check parent hash consistency

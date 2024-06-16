@@ -9,6 +9,12 @@
   "author": "NSG",
   "license": "MIT",
   "dependencies": {
+    "@truffle/contract": "^4.6.31",
+    "dotenv": "^16.4.5",
     "web3": "^4.9.0"
-  }
+  },
+ 
+    "type": "module"
+  
+  
 }

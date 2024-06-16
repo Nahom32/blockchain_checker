@@ -1,19 +1,31 @@
-const Web3 = require('web3');
-const contract = require('@truffle/contract');
-const SimpleStorageArtifact = require('./build/contracts/SimpleStorage.json');
+import 'dotenv/config'; // This will load environment variables from .env file
+import Web3 from 'web3';
 
-const web3 = new Web3('http://localhost:8545');
+// Verify Web3 is imported correctly
+console.log('Web3:', Web3);
 
-const SimpleStorage = contract(SimpleStorageArtifact);
-SimpleStorage.setProvider(web3.currentProvider);
-
-async function main() {
-  const accounts = await web3.eth.getAccounts();
-  const instance = await SimpleStorage.deployed();
-
-  await instance.setData(42, { from: accounts[0] });
-
-  const data = await instance.getData();
-  console.log(`Stored data: ${data}`);
+if (!Web3) {
+  throw new Error('Web3 is not imported correctly.');
 }
-main()
+
+// Connect to Ganache
+const web3 = new Web3(process.env.WEB3_PROVIDER_URL || 'http://localhost:8545');
+
+async function getBlockHashes() {
+  try {
+    const latestBlockNumber = await web3.eth.getBlockNumber();
+    console.log(`Latest Block Number: ${latestBlockNumber}`);
+
+    for (let i = 0; i <= latestBlockNumber; i++) {
+      const block = await web3.eth.getBlock(i);
+      console.log(`Block ${i}:`);
+      console.log(`Hash: ${block.hash}`);
+      console.log(`Parent Hash: ${block.parentHash}`);
+      console.log(`-------------------`);
+    }
+  } catch (error) {
+    console.error('Error fetching block information:', error);
+  }
+}
+
+getBlockHashes();

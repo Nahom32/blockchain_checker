@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import Web3 from 'web3';
 
-// Connect to Ganache
+
 const web3 = new Web3(process.env.WEB3_PROVIDER_URL || 'http://localhost:8545');
 
 async function verifyBlockchainIntegrity() {
@@ -27,7 +27,7 @@ async function verifyBlockchainIntegrity() {
         continue;
       }
 
-      // Check parent hash consistency
+      
       if (previousBlockHash && block.parentHash !== previousBlockHash) {
         console.error(`Block ${i} has been tampered with!`);
         console.error(`Expected parent hash: ${previousBlockHash}`);
@@ -55,8 +55,6 @@ async function getBlockHashes() {
       console.log(`Parent Hash: ${block.parentHash}`);
       console.log(`-------------------`);
     }
-
-    // Verify blockchain integrity after fetching the blocks
     await verifyBlockchainIntegrity();
   } catch (error) {
     console.error('Error fetching block information:', error);

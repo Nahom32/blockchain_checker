@@ -17,6 +17,6 @@ A lightweight and efficient tool to verify the integrity of blockchain data acro
 ## 📦 Installation
 
 ```bash
-git clone https://github.com/yourusername/blockchain-integrity-checker.git
-cd blockchain-integrity-checker
-pip install -r requirements.txt
+git clone https://github.com/Nahom32/blockchain_checker.git
+cd blockchain_checker
+

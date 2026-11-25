@@ -142,12 +142,18 @@ async function scriptedServer(script) {
   return { url: `http://127.0.0.1:${srv.address().port}`, seen, close: () => srv.close() };
 }
 
+/** A client with a fake clock: sleeping advances time instantly. */
 function retryingClient(url, extra = {}) {
   const sleeps = [];
   const retries = [];
+  let clock = 1_000_000;
   const client = createClient(url, 'node', {
     retry: { retries: 3, baseDelayMs: 100, maxDelayMs: 1000, ...extra },
-    sleep: async (ms) => sleeps.push(ms),
+    now: () => clock,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      clock += ms;
+    },
     onRetry: (info) => retries.push(info),
   });
   return { client, sleeps, retries };
@@ -265,5 +271,38 @@ test('network failures are retried for reads only', async () => {
 });
 
 test('the default retry settings are bounded', () => {
-  assert.deepEqual(DEFAULT_RETRY, { retries: 5, baseDelayMs: 250, maxDelayMs: 8000 });
+  assert.deepEqual(DEFAULT_RETRY, { retries: 8, baseDelayMs: 500, maxDelayMs: 15000 });
+});
+
+test('a rate limit pauses every request to that provider, not just the one that hit it', async () => {
+  // The first request is rate-limited with Retry-After: 1s. Requests started
+  // during the pause must wait it out instead of hitting the server.
+  const server = await scriptedServer([{ status: 429, headers: { 'retry-after': '1' } }, { result: '0x1' }]);
+  let clock = 1_000_000;
+  const held = []; // sleeps stay pending until the test advances the clock
+  const client = createClient(server.url, 'node', {
+    retry: { retries: 3, baseDelayMs: 100, maxDelayMs: 5000 },
+    now: () => clock,
+    sleep: (ms) => new Promise((resolve) => held.push({ ms, resolve })),
+  });
+  const until = async (condition) => {
+    for (let i = 0; i < 200 && !condition(); i++) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(condition(), 'timed out waiting');
+  };
+  try {
+    const first = client.getBlockNumber();
+    await until(() => held.length === 1); // the 429 arrived; the client is paused
+    assert.equal(held[0].ms, 1000);
+
+    const others = [client.getBlockNumber(), client.getBlockNumber()];
+    await until(() => held.length === 3); // both new requests are waiting too
+    assert.equal(server.seen.length, 1, 'no request may reach the server during the pause');
+
+    clock += 1000;
+    for (const { resolve } of held.splice(0)) resolve();
+    assert.deepEqual(await Promise.all([first, ...others]), [1n, 1n, 1n]);
+    assert.equal(server.seen.length, 4); // the one 429, then one attempt each
+  } finally {
+    server.close();
+  }
 });

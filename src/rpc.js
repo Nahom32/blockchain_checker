@@ -50,9 +50,9 @@ export function labelsFor(urls) {
 }
 
 export const DEFAULT_RETRY = {
-  retries: 5, // attempts after the first
-  baseDelayMs: 250,
-  maxDelayMs: 8_000, // cap for one wait, including a server's Retry-After
+  retries: 8, // attempts after the first
+  baseDelayMs: 500,
+  maxDelayMs: 15_000, // cap for one wait, including a server's Retry-After
 };
 
 // Methods that only read, so repeating one is always safe.
@@ -91,11 +91,21 @@ export function backoffDelay(attempt, { baseDelayMs, maxDelayMs }, random = Math
  * @param {Partial<typeof DEFAULT_RETRY>} [options.retry]
  * @param {(info: { label, method, attempt, delayMs, reason }) => void} [options.onRetry]
  * @param {(ms: number) => Promise<void>} [options.sleep] injectable for tests
+ * @param {() => number} [options.now] injectable clock for tests
  */
 export function createClient(url, label = labelFor(url), options = {}) {
   const retry = { ...DEFAULT_RETRY, ...options.retry };
   const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const now = options.now ?? Date.now;
   let nextId = 0;
+
+  // When the provider rate-limits any request, every request to it waits
+  // until this time before its next attempt. Without it, concurrent requests
+  // back off independently and keep the limit tripped.
+  let pausedUntil = 0;
+  async function waitOutPause() {
+    for (let wait = pausedUntil - now(); wait > 0; wait = pausedUntil - now()) await sleep(wait);
+  }
 
   async function attempt(method, params) {
     let response;
@@ -145,6 +155,7 @@ export function createClient(url, label = labelFor(url), options = {}) {
    */
   async function request(method, params = []) {
     for (let n = 0; ; n++) {
+      await waitOutPause();
       try {
         return await attempt(method, params);
       } catch (err) {
@@ -155,7 +166,13 @@ export function createClient(url, label = labelFor(url), options = {}) {
         }
         const delayMs = Math.min(retry.maxDelayMs, err.retryAfterMs ?? backoffDelay(n, retry));
         options.onRetry?.({ label, method, attempt: n + 1, delayMs, reason: err.message });
-        await sleep(delayMs);
+        if (err.retry === 'always') {
+          // Rate limited: pause the whole client, not just this request.
+          pausedUntil = Math.max(pausedUntil, now() + delayMs);
+          await waitOutPause();
+        } else {
+          await sleep(delayMs);
+        }
       }
     }
   }

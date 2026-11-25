@@ -2,6 +2,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { network } from 'hardhat';
 import { verifyFromCheckpoint, verifyRange } from '../src/chain.js';
+import { verifyTransactionsRoot } from '../src/body.js';
 
 // Range and checkpoint verification against a real local chain. Hardhat runs
 // the chain in this process, so no separate node is needed.
@@ -98,4 +99,35 @@ test('a checkpoint from before a reorg does not verify against the new chain', a
     checkpointHash: headB.hash, checkpointBlock: headB, from: 0n, fetchBlock,
   });
   assert.equal(fromB.brokenAt, null);
+});
+
+test('a local block with several transaction types has a valid transactions root', async () => {
+  const [from, to, other] = await rpc('eth_accounts');
+  const gasPrice = hex(BigInt(await rpc('eth_gasPrice')) * 2n);
+
+  // Queue several transactions, then mine them into one block.
+  await rpc('evm_setAutomine', [false]);
+  try {
+    await rpc('eth_sendTransaction', [{ from, to, value: '0x1', type: '0x0', gasPrice }]);
+    await rpc('eth_sendTransaction', [
+      { from, to: other, value: '0x2', type: '0x1', gasPrice, accessList: [{ address: other, storageKeys: [`0x${'00'.repeat(32)}`] }] },
+    ]);
+    await rpc('eth_sendTransaction', [{ from, to, value: '0x3', type: '0x2' }]);
+    await rpc('eth_sendTransaction', [{ from: other, to: from, value: '0x4' }]);
+    await rpc('evm_mine');
+  } finally {
+    await rpc('evm_setAutomine', [true]);
+  }
+
+  const block = await rpc('eth_getBlockByNumber', ['latest', true]);
+  assert.equal(block.transactions.length, 4);
+  assert.deepEqual([...new Set(block.transactions.map((tx) => tx.type))].sort(), ['0x0', '0x1', '0x2']);
+
+  const result = await verifyTransactionsRoot(block);
+  assert.equal(result.error, undefined);
+  assert.equal(result.valid, true);
+
+  const tampered = structuredClone(block);
+  tampered.transactions[1].value = '0x99';
+  assert.equal((await verifyTransactionsRoot(tampered)).valid, false);
 });

@@ -1,15 +1,20 @@
 import { web3, getRawBlock } from './src/provider.js';
 import { verifyRange } from './src/chain.js';
+import { parseRangeArgs, resolveRange } from './src/range.js';
 
-// Verify every block's header hash and its link to the previous block.
+// Verify each block's header hash and its link to the previous block.
+// Usage: node integrity_checker.js [--last N] [--from A] [--to B]
+//   Defaults to the last 100 blocks. See src/range.js for how options combine.
 
 async function main() {
+  const args = parseRangeArgs(process.argv.slice(2));
   const latest = await web3.eth.getBlockNumber();
-  console.log(`Latest block number: ${latest}`);
+  const { from, to } = resolveRange(args, latest);
+  console.log(`Latest block number: ${latest}. Checking blocks ${from} to ${to}.`);
 
   const { checked, failed } = await verifyRange({
-    from: 0n,
-    to: latest,
+    from,
+    to,
     fetchBlock: getRawBlock,
     onBlock: ({ number, problems }) => {
       if (problems.length === 0) {

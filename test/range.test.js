@@ -51,3 +51,8 @@ test('--concurrency is parsed and validated', () => {
   assert.throws(() => parseRangeArgs(['--concurrency', '0']), /at least 1/);
   assert.throws(() => parseRangeArgs(['--concurrency', 'x']), /non-negative integer/);
 });
+
+test('--confirmations is parsed', () => {
+  assert.deepEqual(parseRangeArgs(['--confirmations', '12']), { confirmations: 12n });
+  assert.throws(() => parseRangeArgs(['--confirmations', 'x']), /non-negative integer/);
+});

@@ -21,7 +21,7 @@ async function sendValue(value) {
 }
 
 before(async () => {
-  connection = await network.connect();
+  connection = await network.create();
   provider = connection.provider;
 
   // Build a short chain mixing empty blocks and blocks with transactions.

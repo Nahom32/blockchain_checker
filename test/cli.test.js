@@ -174,3 +174,23 @@ test('tamper rejects a bad block argument or a missing block', async () => {
   assert.equal(extra.code, 1);
   assert.match(extra.stderr, /expected at most one block number/);
 });
+
+// --- check-local --------------------------------------------------------------
+
+test('check-local sends transactions, mines them and verifies every block', async () => {
+  const own = await startHardhatHttp(); // mines blocks, so not the shared chain
+  try {
+    const { code, stdout } = await cli(['check-local'], { WEB3_PROVIDER_URL: own.url });
+    assert.equal(code, 0);
+    assert.match(stdout, /block 1 \[prague, 1 txs\]: valid/);
+    assert.match(stdout, /All 5 blocks verified\./);
+  } finally {
+    await own.close();
+  }
+});
+
+test('check-local takes no arguments', async () => {
+  const { code, stderr } = await cli(['check-local', '--last', '3']);
+  assert.equal(code, 1);
+  assert.match(stderr, /check-local takes no arguments/);
+});

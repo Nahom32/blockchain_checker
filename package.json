@@ -8,7 +8,7 @@
     "compare": "node src/cli.js compare",
     "tamper": "node src/cli.js tamper",
     "node": "hardhat node",
-    "check:local": "node scripts/check-local-node.js",
+    "check:local": "node src/cli.js check-local",
     "check:fork": "node scripts/check-fork.js",
     "test": "node --test \"test/**/*.test.js\""
   },

@@ -1,13 +1,14 @@
 import 'dotenv/config';
 import { pathToFileURL } from 'node:url';
 import { printer, processIO } from './output.js';
+import * as checkLocal from './commands/check-local.js';
 import * as compare from './commands/compare.js';
 import * as tamper from './commands/tamper.js';
 import * as verify from './commands/verify.js';
 
 // Entry point: blockchain-checker <command> [options]
 
-export const COMMANDS = { verify, compare, tamper };
+export const COMMANDS = { verify, compare, tamper, 'check-local': checkLocal };
 
 function usage() {
   const width = Math.max(...Object.keys(COMMANDS).map((name) => name.length));

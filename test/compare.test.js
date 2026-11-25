@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { compareBlock, compareRange, describe, fetchFromAll, kindOf } from '../src/compare.js';
+import { compareBlock, compareRange, describe, fetchFromAll, finalizedBoundary, kindOf } from '../src/compare.js';
 import { verifyHeaderHash } from '../src/header.js';
 
 // Five consecutive mainnet blocks (22431084..22431088), headers only.
@@ -135,4 +135,55 @@ test('missing blocks and errors alone are incomplete, not a conflict', () => {
 test('agreement is its own kind', () => {
   const result = compareBlock(first, [{ label: 'a', block: sequence[0] }, { label: 'b', block: sequence[0] }]);
   assert.equal(kindOf(result), 'agree');
+});
+
+// --- finality ---------------------------------------------------------------
+
+function finalityClient(finalized) {
+  return {
+    label: 'f',
+    request: async (method, params) => {
+      assert.deepEqual([method, params], ['eth_getBlockByNumber', ['finalized', false]]);
+      if (finalized instanceof Error) throw finalized;
+      return finalized === null ? null : { number: `0x${finalized.toString(16)}` };
+    },
+  };
+}
+
+test('the finalized boundary is the lowest finalized block across providers', async () => {
+  const boundary = await finalizedBoundary([
+    { client: finalityClient(1000n), head: 1070n },
+    { client: finalityClient(990n), head: 1070n },
+  ]);
+  assert.equal(boundary, 990n);
+});
+
+test('providers without the finalized tag fall back to head minus confirmations', async () => {
+  const providers = [
+    { client: finalityClient(new Error('f: eth_getBlockByNumber failed: unknown block tag')), head: 1000n },
+    { client: finalityClient(null), head: 1010n },
+  ];
+  assert.equal(await finalizedBoundary(providers), 1000n - 64n);
+  assert.equal(await finalizedBoundary(providers, 10n), 990n);
+  assert.equal(await finalizedBoundary([{ client: finalityClient(null), head: 5n }]), 0n);
+});
+
+test('different hashes above the finalized block are unfinalized, below are a conflict', () => {
+  const fake = forged(sequence[0], { miner: '0x000000000000000000000000000000000000dead' });
+  const result = compareBlock(first, [
+    { label: 'a', block: sequence[0] },
+    { label: 'b', block: fake },
+  ]);
+  assert.equal(kindOf(result, first - 1n), 'unfinalized');
+  assert.equal(kindOf(result, first), 'conflict');
+  assert.equal(kindOf(result), 'conflict'); // no boundary: treat as finalized
+  assert.match(describe(result, first - 1n)[0], /not finalized yet/);
+});
+
+test('a block whose fields do not match its hash is a conflict even above finality', () => {
+  const result = compareBlock(first, [
+    { label: 'a', block: sequence[0] },
+    { label: 'b', block: { ...sequence[0], gasUsed: '0x1' } },
+  ]);
+  assert.equal(kindOf(result, first - 1n), 'conflict');
 });

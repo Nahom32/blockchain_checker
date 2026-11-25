@@ -8,6 +8,7 @@ const options = {
   last: { type: 'string' },
   checkpoint: { type: 'string' },
   concurrency: { type: 'string' },
+  confirmations: { type: 'string' },
 };
 
 function toBlockNumber(name, value) {
@@ -17,7 +18,8 @@ function toBlockNumber(name, value) {
 
 /**
  * Parse --from, --to and --last into bigints, --checkpoint into a lowercase
- * block hash, and --concurrency into a number. Absent options are undefined.
+ * block hash, --concurrency into a number and --confirmations into a bigint.
+ * Absent options are undefined.
  */
 export function parseRangeArgs(argv) {
   const { values } = parseArgs({ args: argv, options, strict: true });
@@ -37,6 +39,7 @@ export function parseRangeArgs(argv) {
     if (concurrency < 1) throw new Error('--concurrency must be at least 1');
     parsed.concurrency = concurrency;
   }
+  if (values.confirmations !== undefined) parsed.confirmations = toBlockNumber('confirmations', values.confirmations);
   return parsed;
 }
 

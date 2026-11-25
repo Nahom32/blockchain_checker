@@ -1,12 +1,16 @@
 import 'dotenv/config';
 import { clientsFromEnv } from './src/rpc.js';
-import { compareRange, describe, kindOf } from './src/compare.js';
+import { compareRange, describe, finalizedBoundary, kindOf } from './src/compare.js';
 import { parseRangeArgs, resolveRange } from './src/range.js';
 
 // Compare blocks across several RPC providers (WEB3_PROVIDER_URLS, comma-separated).
-// Usage: node compare_providers.js [--last N] [--from A] [--to B] [--concurrency N]
+// Usage: node compare_providers.js [--last N] [--from A] [--to B] [--concurrency N] [--confirmations N]
 //   Defaults to the last 100 blocks that every reachable provider has.
-// Exit code: 0 all agree, 1 providers disagree, 2 only incomplete results.
+//   Disagreements above the finalized block (every provider's 'finalized' tag,
+//   or head minus --confirmations, default 64, if unsupported) are reported as
+//   likely reorgs, not tampering.
+// Exit code: 0 all agree, 1 providers disagree on a finalized block,
+//   2 only unfinalized disagreements or incomplete results.
 
 async function reachable(clients) {
   const heads = await Promise.all(
@@ -36,23 +40,26 @@ async function main() {
   const latest = up.map((u) => u.head).reduce((a, b) => (a < b ? a : b));
   const { from, to } = resolveRange(args, latest);
   const clients = up.map((u) => u.client);
-  console.log(`Comparing blocks ${from} to ${to} across ${clients.length} providers:`);
+  const finalized = await finalizedBoundary(up, args.confirmations);
+  console.log(`Comparing blocks ${from} to ${to} across ${clients.length} providers (finalized up to ${finalized}):`);
   for (const { client, head } of up) console.log(`  ${client.label} (head ${head})`);
 
   const { checked, disagreements } = await compareRange({
     clients, from, to, concurrency: args.concurrency,
     onBlock: (result) => {
-      if (!result.agreed) console.log(`\n${describe(result).join('\n')}`);
+      if (!result.agreed) console.log(`\n${describe(result, finalized).join('\n')}`);
     },
   });
 
-  const conflicts = disagreements.filter((d) => kindOf(d) === 'conflict').length;
-  const incomplete = disagreements.length - conflicts;
+  const count = (kind) => disagreements.filter((d) => kindOf(d, finalized) === kind).length;
+  const conflicts = count('conflict');
+  const unfinalized = count('unfinalized');
+  const incomplete = count('incomplete');
   console.log(
-    `\nChecked ${checked} blocks: ${checked - disagreements.length} agree, ` +
-      `${conflicts} disagree, ${incomplete} incomplete.`,
+    `\nChecked ${checked} blocks: ${checked - disagreements.length} agree, ${conflicts} disagree, ` +
+      `${unfinalized} disagree before finality, ${incomplete} incomplete.`,
   );
-  return conflicts > 0 ? 1 : incomplete > 0 ? 2 : 0;
+  return conflicts > 0 ? 1 : unfinalized + incomplete > 0 ? 2 : 0;
 }
 
 main().then(

@@ -68,26 +68,61 @@ export async function compareRange({ clients, from, to, concurrency, onBlock }) 
   return { checked, disagreements };
 }
 
+export const DEFAULT_CONFIRMATIONS = 64n; // about two epochs on Ethereum mainnet
+
 /**
- * 'agree'      every provider returned the same valid block
- * 'conflict'   providers returned different hashes, or a block whose fields
- *              don't match its hash: someone is serving different data
- * 'incomplete' every block returned agrees, but some provider had no block
- *              or the request failed, so the comparison is partial
+ * The highest block number every provider considers finalized: the lowest of
+ * their 'finalized' blocks. A provider without the 'finalized' tag counts as
+ * finalized up to its head minus `confirmations`.
+ *
+ * @param {Array<{ client, head: bigint }>} providers
  */
-export function kindOf(result) {
+export async function finalizedBoundary(providers, confirmations = DEFAULT_CONFIRMATIONS) {
+  const numbers = await Promise.all(
+    providers.map(async ({ client, head }) => {
+      try {
+        const block = await client.request('eth_getBlockByNumber', ['finalized', false]);
+        if (block) return BigInt(block.number);
+      } catch {
+        // Tag unsupported (pre-merge chains, some nodes): fall back below.
+      }
+      return head > confirmations ? head - confirmations : 0n;
+    }),
+  );
+  return numbers.reduce((a, b) => (a < b ? a : b));
+}
+
+/**
+ * 'agree'       every provider returned the same valid block
+ * 'conflict'    providers returned different hashes, or a block whose fields
+ *               don't match its hash: someone is serving different data
+ * 'unfinalized' a conflict on a block above `finalized`: honest nodes can
+ *               briefly disagree there during a reorg, so it is not proof
+ *               of tampering
+ * 'incomplete'  every block returned agrees, but some provider had no block
+ *               or the request failed, so the comparison is partial
+ *
+ * @param {bigint} [finalized] highest finalized block number; omit to treat
+ *   every block as finalized
+ */
+export function kindOf(result, finalized) {
   if (result.agreed) return 'agree';
   const blocks = result.responses.filter((r) => r.hash);
   const hashes = new Set(blocks.map((r) => r.hash));
-  if (hashes.size > 1 || blocks.some((r) => !r.valid)) return 'conflict';
+  const invalid = blocks.some((r) => !r.valid);
+
+  // A block whose fields don't match its own hash is never a reorg.
+  if (invalid) return 'conflict';
+  if (hashes.size > 1) return finalized !== undefined && result.number > finalized ? 'unfinalized' : 'conflict';
   return 'incomplete';
 }
 
 /** Human-readable lines describing one non-agreeing block. */
-export function describe(result) {
-  const kind = kindOf(result);
+export function describe(result, finalized) {
+  const kind = kindOf(result, finalized);
   const title = {
     conflict: 'providers DISAGREE',
+    unfinalized: 'providers disagree, but the block is not finalized yet (likely a reorg near the head)',
     incomplete: 'not every provider returned this block',
   }[kind];
   const lines = [`Block ${result.number}: ${title}`];

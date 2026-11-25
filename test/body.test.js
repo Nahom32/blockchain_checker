@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { RLP } from '@ethereumjs/rlp';
-import { encodeReceipt, fetchBlockReceipts, verifyReceiptsRoot, verifyTransactionsRoot } from '../src/body.js';
+import {
+  encodeReceipt, fetchBlockReceipts, verifyReceiptsRoot, verifyTransactionsRoot, verifyWithdrawalsRoot,
+} from '../src/body.js';
 
 const load = (name) => JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8'));
 
@@ -173,4 +175,43 @@ test('fetchBlockReceipts uses eth_getBlockReceipts, or falls back per transactio
   const fetched = await fetchBlockReceipts(legacy, blk);
   assert.equal(calls.filter((m) => m === 'eth_getTransactionReceipt').length, 34);
   assert.equal((await verifyReceiptsRoot(blk, fetched)).valid, true);
+});
+
+// --- withdrawals ------------------------------------------------------------
+
+const headers = load('mainnet-blocks.json');
+
+for (const [name, blk] of Object.entries({ ...headers, ...full })) {
+  test(`${name} block ${parseInt(blk.number)} withdrawals root`, async () => {
+    const result = await verifyWithdrawalsRoot(blk);
+    assert.equal(result.error, undefined);
+    assert.equal(result.valid, true);
+    assert.equal(result.applicable, blk.withdrawalsRoot != null);
+  });
+}
+
+test('tampering with withdrawals is detected', async () => {
+  const blk = full.allModernTypes;
+  assert.ok(blk.withdrawals.length > 1);
+  const edits = {
+    amount: (w) => { w[0].amount = bump(w[0].amount); },
+    address: (w) => { w[0].address = '0x000000000000000000000000000000000000dead'; },
+    index: (w) => { w[0].index = bump(w[0].index); },
+    validatorIndex: (w) => { w[0].validatorIndex = bump(w[0].validatorIndex); },
+    dropped: (w) => { w.pop(); },
+    reordered: (w) => { [w[0], w[1]] = [w[1], w[0]]; },
+  };
+  for (const [what, edit] of Object.entries(edits)) {
+    const withdrawals = structuredClone(blk.withdrawals);
+    edit(withdrawals);
+    assertRootMismatch(await verifyWithdrawalsRoot({ ...blk, withdrawals }), what);
+  }
+});
+
+test('a withdrawals root without a withdrawals list, or the reverse, is reported', async () => {
+  const { withdrawals, ...noList } = full.allModernTypes;
+  assert.match((await verifyWithdrawalsRoot(noList)).error, /no withdrawals list/);
+
+  const preShanghai = { ...headers.london, withdrawals };
+  assert.match((await verifyWithdrawalsRoot(preShanghai)).error, /no withdrawalsRoot/);
 });

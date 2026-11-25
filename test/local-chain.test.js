@@ -2,7 +2,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { network } from 'hardhat';
 import { verifyFromCheckpoint, verifyRange } from '../src/chain.js';
-import { fetchBlockReceipts, verifyReceiptsRoot, verifyTransactionsRoot } from '../src/body.js';
+import { fetchBlockReceipts, verifyReceiptsRoot, verifyTransactionsRoot, verifyWithdrawalsRoot } from '../src/body.js';
 
 // Range and checkpoint verification against a real local chain. Hardhat runs
 // the chain in this process, so no separate node is needed.
@@ -156,4 +156,13 @@ test('a local block with a log and a failed transaction has a valid receipts roo
   const tampered = structuredClone(receipts);
   tampered[1].status = '0x1';
   assert.equal((await verifyReceiptsRoot(block, tampered)).valid, false);
+});
+
+test('local blocks have a valid (empty) withdrawals root', async () => {
+  for (const tag of ['0x0', 'latest']) {
+    const block = await rpc('eth_getBlockByNumber', [tag, false]);
+    const result = await verifyWithdrawalsRoot(block);
+    assert.equal(result.error, undefined);
+    assert.equal(result.valid, true);
+  }
 });

@@ -1,9 +1,9 @@
-import { genTransactionsTrieRoot } from '@ethereumjs/block';
+import { genTransactionsTrieRoot, genWithdrawalsTrieRoot } from '@ethereumjs/block';
 import { Common, Mainnet } from '@ethereumjs/common';
 import { MerklePatriciaTrie } from '@ethereumjs/mpt';
 import { RLP } from '@ethereumjs/rlp';
 import { createTxFromRPC } from '@ethereumjs/tx';
-import { bigIntToUnpaddedBytes, bytesToHex, concatBytes, hexToBytes } from '@ethereumjs/util';
+import { bigIntToUnpaddedBytes, bytesToHex, concatBytes, createWithdrawal, hexToBytes } from '@ethereumjs/util';
 import { inferHardfork } from './header.js';
 
 // Verify that a block's body matches the roots its header commits to.
@@ -141,4 +141,34 @@ export async function fetchBlockReceipts(request, block) {
   }
   const hashes = block.transactions.map((tx) => (typeof tx === 'string' ? tx : tx.hash));
   return Promise.all(hashes.map((hash) => request('eth_getTransactionReceipt', [hash])));
+}
+
+/**
+ * Rebuild the withdrawals trie (Shanghai and later) and compare its root with
+ * the header's withdrawalsRoot. Blocks list their withdrawals even when
+ * fetched without full transactions.
+ *
+ * @returns {Promise<{ valid: boolean, applicable: boolean, expected: string | null,
+ *   actual: string | null, error?: string }>}
+ *   `applicable` is false for pre-Shanghai blocks, which have no withdrawals.
+ */
+export async function verifyWithdrawalsRoot(block) {
+  if (block.withdrawalsRoot == null) {
+    if (block.withdrawals?.length) {
+      return { valid: false, applicable: true, expected: null, actual: null, error: 'block has withdrawals but no withdrawalsRoot' };
+    }
+    return { valid: true, applicable: false, expected: null, actual: null };
+  }
+
+  const actual = String(block.withdrawalsRoot).toLowerCase();
+  if (!Array.isArray(block.withdrawals)) {
+    return { valid: false, applicable: true, expected: null, actual, error: 'block has a withdrawalsRoot but no withdrawals list' };
+  }
+  let expected;
+  try {
+    expected = bytesToHex(await genWithdrawalsTrieRoot(block.withdrawals.map((w) => createWithdrawal(w))));
+  } catch (err) {
+    return { valid: false, applicable: true, expected: null, actual, error: err.message };
+  }
+  return { valid: expected === actual, applicable: true, expected, actual };
 }

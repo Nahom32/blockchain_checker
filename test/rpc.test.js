@@ -2,7 +2,8 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import {
-  backoffDelay, clientsFromEnv, createClient, DEFAULT_RETRY, labelFor, labelsFor, parseRetryAfter, providerUrlsFromEnv,
+  backoffDelay, clientsFromEnv, createClient, DEFAULT_RETRY, describeNetworkError, labelFor, labelsFor, parseRetryAfter,
+  providerUrlsFromEnv,
 } from '../src/rpc.js';
 
 test('WEB3_PROVIDER_URLS is split on commas, trimmed and deduplicated', () => {
@@ -260,14 +261,63 @@ test('it gives up after the configured retries and says so', async () => {
   }
 });
 
-test('network failures are retried for reads only', async () => {
-  const { client, retries } = retryingClient('http://127.0.0.1:1/', { retries: 2 });
-  await assert.rejects(client.getBlockNumber(), /request failed .*\(gave up after 2 retries\)$/);
-  assert.equal(retries.length, 2);
+/** A server that accepts connections and immediately drops them. */
+async function droppingServer() {
+  let connections = 0;
+  const srv = createServer();
+  srv.on('connection', (socket) => {
+    connections++;
+    socket.destroy();
+  });
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  return { url: `http://127.0.0.1:${srv.address().port}/`, connections: () => connections, close: () => srv.close() };
+}
 
-  const writer = retryingClient('http://127.0.0.1:1/', { retries: 2 });
-  await assert.rejects(writer.client.request('eth_sendRawTransaction', ['0x00']), /request failed \([^)]*\)$/);
-  assert.equal(writer.retries.length, 0);
+/** A local port with nothing listening on it. */
+async function closedPortUrl() {
+  const srv = createServer();
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  const { port } = srv.address();
+  await new Promise((resolve) => srv.close(resolve));
+  return `http://127.0.0.1:${port}/`;
+}
+
+test('dropped connections are retried for reads only', async () => {
+  const server = await droppingServer();
+  try {
+    const reader = retryingClient(server.url, { retries: 2 });
+    await assert.rejects(reader.client.getBlockNumber(), /request failed \(\w+\) \(gave up after 2 retries\)$/);
+    assert.equal(reader.retries.length, 2);
+
+    const before = server.connections();
+    const writer = retryingClient(server.url, { retries: 2 });
+    await assert.rejects(writer.client.request('eth_sendRawTransaction', ['0x00']), /request failed \(\w+\)$/);
+    assert.equal(writer.retries.length, 0);
+    assert.equal(server.connections() - before, 1, 'a write must not be sent twice');
+  } finally {
+    server.close();
+  }
+});
+
+test('a refused connection fails at once instead of retrying', async () => {
+  const { client, retries, sleeps } = retryingClient(await closedPortUrl(), { retries: 5 });
+  await assert.rejects(client.getBlockNumber(), /^Error: node: eth_blockNumber request failed \(ECONNREFUSED\)$/);
+  assert.equal(retries.length, 0);
+  assert.deepEqual(sleeps, []);
+});
+
+test('network errors are classified as transient or permanent', () => {
+  const withCause = (cause, name = 'TypeError') => Object.assign(new Error('fetch failed'), { name, cause });
+  assert.deepEqual(describeNetworkError(withCause({ code: 'ECONNRESET' })), { detail: 'ECONNRESET', transient: true });
+  assert.deepEqual(describeNetworkError(withCause({ code: 'ECONNREFUSED' })), { detail: 'ECONNREFUSED', transient: false });
+  assert.deepEqual(describeNetworkError(withCause({ code: 'ENOTFOUND' })), { detail: 'ENOTFOUND', transient: false });
+  // localhost tries IPv4 and IPv6; the codes are on cause.errors
+  assert.deepEqual(
+    describeNetworkError(withCause({ errors: [{ code: 'ECONNREFUSED' }, { code: 'ECONNREFUSED' }] })),
+    { detail: 'ECONNREFUSED', transient: false },
+  );
+  assert.deepEqual(describeNetworkError(withCause({ message: 'bad port' })), { detail: 'bad port', transient: false });
+  assert.deepEqual(describeNetworkError(withCause(undefined, 'TimeoutError')), { detail: 'timed out', transient: true });
 });
 
 test('the default retry settings are bounded', () => {

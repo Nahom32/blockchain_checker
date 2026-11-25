@@ -71,6 +71,22 @@ class AttemptError extends Error {
   }
 }
 
+const PERMANENT_NETWORK_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND']);
+
+/**
+ * Summarise a fetch() network error. Node puts the system error code on
+ * err.cause (or on each of cause.errors when several addresses were tried,
+ * e.g. localhost on IPv4 and IPv6). Errors with no code, such as fetch's
+ * "bad port" refusal, are not transient; request timeouts are.
+ */
+export function describeNetworkError(err) {
+  const cause = err.cause;
+  const code = cause?.code ?? cause?.errors?.find((e) => e.code)?.code;
+  if (err.name === 'TimeoutError') return { detail: 'timed out', transient: true };
+  if (code) return { detail: code, transient: !PERMANENT_NETWORK_CODES.has(code) };
+  return { detail: cause?.message || err.name, transient: false };
+}
+
 /** Retry-After as milliseconds: either seconds or an HTTP date. */
 export function parseRetryAfter(value, now = Date.now()) {
   if (value == null || value === '') return undefined;
@@ -117,10 +133,13 @@ export function createClient(url, label = labelFor(url), options = {}) {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (err) {
-      // Network errors can echo the URL; report only the label. The request
-      // may or may not have reached the node, so only reads are retried.
-      throw new AttemptError(`${label}: ${method} request failed (${err.cause?.code ?? err.name})`, {
-        retry: 'read-only',
+      // Network errors can echo the URL; report only the label.
+      const { detail, transient } = describeNetworkError(err);
+      // A transient failure may or may not have reached the node, so only
+      // reads are retried. A refused connection or unknown host is not
+      // retried at all: nothing is listening, and waiting won't change that.
+      throw new AttemptError(`${label}: ${method} request failed (${detail})`, {
+        retry: transient ? 'read-only' : undefined,
       });
     }
 

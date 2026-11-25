@@ -1,60 +1,73 @@
-import { web3 } from './src/provider.js';
+import { web3, getRawBlock, getRawBlockByHash } from './src/provider.js';
+import { verifyFromCheckpoint, verifyRange } from './src/chain.js';
+import { parseRangeArgs, resolveRange } from './src/range.js';
 
-async function verifyBlockchainIntegrity() {
-  try {
-    const latestBlockNumber = await web3.eth.getBlockNumber();
-    console.log(`Latest Block Number: ${latestBlockNumber}`);
+// Verify each block's header hash and its link to the previous block.
+// Usage:
+//   node integrity_checker.js [--last N] [--from A] [--to B]
+//     Defaults to the last 100 blocks. See src/range.js for how options combine.
+//   node integrity_checker.js --checkpoint <trusted block hash> [--last N | --from A]
+//     Verify backward from a block hash you trust (e.g. a finalized block from
+//     a block explorer). Every verified block is tied to that hash, so the node
+//     itself does not need to be trusted.
+//   Either mode accepts --concurrency N: max block requests in flight (default 10).
 
-    let previousBlockHash = null;
-    for (let i = 0; i <= latestBlockNumber; i++) {
-      const block = await web3.eth.getBlock(i);
-
-      
-      if (i === 0) {
-        if (block.parentHash === '0x0000000000000000000000000000000000000000000000000000000000000000') {
-          console.log(`Genesis Block ${i} is valid:`);
-          console.log(`Hash: ${block.hash}`);
-          console.log(`-------------------`);
-          previousBlockHash = block.hash; // Genesis block has no parentHash
-        } else {
-          console.error(`Genesis Block ${i} has an incorrect parent hash!`);
-          return;
-        }
-        continue;
-      }
-
-      
-      if (previousBlockHash && block.parentHash !== previousBlockHash) {
-        console.error(`Block ${i} has been tampered with!`);
-        console.error(`Expected parent hash: ${previousBlockHash}`);
-        console.error(`Actual parent hash: ${block.parentHash}`);
-        return;
-      }
-
-      console.log(`Block ${i} is valid.`);
-      previousBlockHash = block.hash;
-    }
-  } catch (error) {
-    console.error('Error verifying blockchain integrity:', error);
+function printBlock({ number, problems }) {
+  if (problems.length === 0) {
+    console.log(`Block ${number} is valid.`);
+  } else {
+    console.error(`Block ${number} FAILED:`);
+    for (const problem of problems) console.error(`  - ${problem}`);
   }
 }
 
-async function getBlockHashes() {
-  try {
-    const latestBlockNumber = await web3.eth.getBlockNumber();
-    console.log(`Latest Block Number: ${latestBlockNumber}`);
+async function checkRange(args) {
+  const latest = await web3.eth.getBlockNumber();
+  const { from, to } = resolveRange(args, latest);
+  console.log(`Latest block number: ${latest}. Checking blocks ${from} to ${to}.`);
 
-    for (let i = 0; i <= latestBlockNumber; i++) {
-      const block = await web3.eth.getBlock(i);
-      console.log(`Block ${i}:`);
-      console.log(`Hash: ${block.hash}`);
-      console.log(`Parent Hash: ${block.parentHash}`);
-      console.log(`-------------------`);
-    }
-    await verifyBlockchainIntegrity();
-  } catch (error) {
-    console.error('Error fetching block information:', error);
-  }
+  const { checked, failed } = await verifyRange({
+    from, to, fetchBlock: getRawBlock, onBlock: printBlock, concurrency: args.concurrency,
+  });
+
+  console.log(`\nChecked ${checked} blocks: ${checked - failed.length} valid, ${failed.length} failed.`);
+  return failed.length === 0;
 }
 
-getBlockHashes();
+async function checkFromCheckpoint(args) {
+  const checkpointBlock = await getRawBlockByHash(args.checkpoint);
+  if (!checkpointBlock) {
+    console.error(`The node has no block with hash ${args.checkpoint}.`);
+    return false;
+  }
+
+  const { from, to } = resolveRange(args, BigInt(checkpointBlock.number));
+  console.log(`Checkpoint ${args.checkpoint} is block ${to}. Checking back to block ${from}.`);
+
+  const { checked, brokenAt } = await verifyFromCheckpoint({
+    checkpointHash: args.checkpoint,
+    checkpointBlock,
+    from,
+    fetchBlock: getRawBlock,
+    onBlock: printBlock,
+    concurrency: args.concurrency,
+  });
+
+  if (brokenAt === null) {
+    console.log(`\nAll ${checked} blocks (${from} to ${to}) are tied to the checkpoint.`);
+    return true;
+  }
+  console.error(`\nChain of trust broken at block ${brokenAt}; blocks ${from} to ${brokenAt} are not verified.`);
+  return false;
+}
+
+async function main() {
+  const args = parseRangeArgs(process.argv.slice(2));
+  const ok = args.checkpoint ? await checkFromCheckpoint(args) : await checkRange(args);
+  if (!ok) process.exitCode = 1;
+}
+
+main().catch((error) => {
+  console.error('Error verifying blockchain integrity:', error.message ?? error);
+  process.exitCode = 1;
+});

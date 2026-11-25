@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { clientsFromEnv } from './src/rpc.js';
-import { compareRange, describe, getFinality, kindOf } from './src/compare.js';
+import { compareRange, describe, getFinality, kindOf, providerWarnings } from './src/compare.js';
 import { parseRangeArgs, resolveRange } from './src/range.js';
 
 // Compare blocks across several RPC providers (WEB3_PROVIDER_URLS, comma-separated).
@@ -48,6 +48,7 @@ async function main() {
     const source = p.source === 'tag' ? 'finalized' : 'no finalized tag, assumed';
     console.log(`  ${p.label} (head ${p.head}, ${source} ${p.finalized})`);
   }
+  for (const warning of providerWarnings(finality, args.confirmations)) console.warn(`Warning: ${warning}`);
 
   const { checked, disagreements } = await compareRange({
     clients, from, to, concurrency: args.concurrency,

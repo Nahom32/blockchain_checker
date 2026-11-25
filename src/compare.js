@@ -109,6 +109,35 @@ export async function getFinality(providers, confirmations = DEFAULT_CONFIRMATIO
 }
 
 /**
+ * Warnings about providers whose reported head or finality is far from the
+ * others: lagging nodes, or nodes misreporting either. Neither can hide a
+ * forgery (heads only narrow the compared range, which is printed, and low
+ * finality claims are ignored), but they should be visible, not silent.
+ *
+ * @param {Awaited<ReturnType<typeof getFinality>>} finality
+ * @returns {string[]}
+ */
+export function providerWarnings(finality, confirmations = DEFAULT_CONFIRMATIONS) {
+  const warnings = [];
+  const highestHead = finality.providers.map((p) => p.head).reduce((a, b) => (a > b ? a : b));
+
+  for (const p of finality.providers) {
+    const behind = highestHead - p.head;
+    if (behind > confirmations) {
+      warnings.push(`${p.label}'s head is ${behind} blocks behind the highest; only blocks up to ${p.head} can be compared.`);
+    }
+    const finalityGap = finality.boundary - p.finalized;
+    if (p.source === 'tag' && finalityGap > confirmations) {
+      warnings.push(
+        `${p.label} reports finalized ${p.finalized}, ${finalityGap} blocks behind the others ` +
+          '(lagging, or misreporting finality); its claim is not used.',
+      );
+    }
+  }
+  return warnings;
+}
+
+/**
  * 'agree'       every provider returned the same valid block
  * 'conflict'    providers returned different hashes, or a block whose fields
  *               don't match its hash: someone is serving different data

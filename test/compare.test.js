@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { compareBlock, compareRange, describe, fetchFromAll, getFinality, kindOf } from '../src/compare.js';
+import { compareBlock, compareRange, describe, fetchFromAll, getFinality, kindOf, providerWarnings } from '../src/compare.js';
 import { verifyHeaderHash } from '../src/header.js';
 
 // Five consecutive mainnet blocks (22431084..22431088), headers only.
@@ -218,4 +218,26 @@ test('a block whose fields do not match its hash is a conflict even above finali
     { label: 'b', block: { ...sequence[0], gasUsed: '0x1' } },
   ]);
   assert.equal(kindOf(result, first - 1n), 'conflict');
+});
+
+test('providers far behind on head or finality are warned about', async () => {
+  const labelled = (label, finalized) => ({ ...finalityClient(finalized), label });
+  const finality = await getFinality([
+    { client: labelled('good', 1000n), head: 1070n },
+    { client: labelled('lowball', 0n), head: 1070n },
+    { client: labelled('lagging', 800n), head: 870n },
+  ]);
+  assert.deepEqual(providerWarnings(finality), [
+    "lowball reports finalized 0, 1000 blocks behind the others (lagging, or misreporting finality); its claim is not used.",
+    "lagging's head is 200 blocks behind the highest; only blocks up to 870 can be compared.",
+    'lagging reports finalized 800, 200 blocks behind the others (lagging, or misreporting finality); its claim is not used.',
+  ]);
+});
+
+test('providers close together produce no warnings', async () => {
+  const finality = await getFinality([
+    { client: finalityClient(1000n), head: 1070n },
+    { client: finalityClient(968n), head: 1066n },
+  ]);
+  assert.deepEqual(providerWarnings(finality), []);
 });

@@ -356,3 +356,71 @@ test('a rate limit pauses every request to that provider, not just the one that 
     server.close();
   }
 });
+
+// --- adaptive concurrency ---------------------------------------------------
+
+/** A server that rate-limits whenever more than `capacity` requests are in flight. */
+async function cappedServer(capacity, latencyMs = 15) {
+  let active = 0;
+  let peak = 0;
+  let served = 0;
+  let rejected = 0;
+  const srv = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      const { id } = JSON.parse(body);
+      if (active >= capacity) {
+        rejected++;
+        res.writeHead(429).end();
+        return;
+      }
+      active++;
+      peak = Math.max(peak, active);
+      setTimeout(() => {
+        active--;
+        served++;
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id, result: '0x1' }));
+      }, latencyMs);
+    });
+  });
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  return {
+    url: `http://127.0.0.1:${srv.address().port}`,
+    stats: () => ({ peak, served, rejected }),
+    close: () => srv.close(),
+  };
+}
+
+test('the client settles at what a rate-limited provider can handle', async () => {
+  const { fetchInOrder, ascending } = await import('../src/fetch.js');
+  const server = await cappedServer(3);
+  try {
+    let clock = 0;
+    const retries = [];
+    const client = createClient(server.url, 'capped', {
+      maxConcurrency: 10,
+      retry: { retries: 8, baseDelayMs: 1, maxDelayMs: 5 },
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+        await new Promise((r) => setTimeout(r, 1));
+      },
+      onRetry: (r) => retries.push(r),
+    });
+
+    let done = 0;
+    for await (const [, result] of fetchInOrder(ascending(1n, 120n), (n) => client.getBlock(n), 10)) {
+      if (result) done++;
+    }
+    const { served, rejected } = server.stats();
+    assert.equal(done, 120);
+    assert.equal(served, 120);
+    assert.ok(client.stats().limit <= 4, `limit settled at ${client.stats().limit}`);
+    // Measured: ~26 rejections with adaptive concurrency, ~1,550 with the
+    // limit cut disabled. The bound leaves room for timing variance.
+    assert.ok(rejected < 100, `${rejected} rejections`);
+  } finally {
+    server.close();
+  }
+});

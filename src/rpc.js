@@ -100,12 +100,71 @@ export function backoffDelay(attempt, { baseDelayMs, maxDelayMs }, random = Math
   return Math.min(maxDelayMs, random() * baseDelayMs * 2 ** attempt);
 }
 
+export const DEFAULT_MAX_CONCURRENCY = 10;
+
+/**
+ * Adaptive limit on concurrent requests to one provider (AIMD, as in TCP
+ * congestion control):
+ * - a rate limit halves the requests in flight (multiplicative decrease),
+ *   once per burst: attempts that were already in flight when it was cut
+ *   don't cut it again, so ten simultaneous 429s count as one overload;
+ * - each success of a request sent while the window was full (at any point
+ *   while it was in flight) grows the limit by 1/limit: about one slot per
+ *   full round (additive increase), up to `max`. A limit nobody uses
+ *   doesn't grow, so it can't creep up and overload the provider later.
+ * It never goes below 1.
+ */
+export function createAimdLimiter({ max = DEFAULT_MAX_CONCURRENCY } = {}) {
+  let limit = max; // fractional; floor(limit) slots are usable
+  let inFlight = 0;
+  let issued = 0; // sequence number of the last acquired slot
+  let cutAt = 0; // sequence number when the limit was last cut
+  let fills = 0; // times the window became full
+  const waiting = [];
+
+  const slots = () => Math.max(1, Math.floor(limit));
+  const grant = () => {
+    const ticket = { seq: ++issued, fills };
+    inFlight++;
+    if (inFlight >= slots()) fills++;
+    return ticket;
+  };
+  const wake = () => {
+    while (waiting.length > 0 && inFlight < slots()) waiting.shift()(grant());
+  };
+
+  return {
+    /** Wait for a free slot. Resolves to a ticket to pass to release(). */
+    acquire() {
+      if (inFlight < slots() && waiting.length === 0) return Promise.resolve(grant());
+      return new Promise((resolve) => waiting.push(resolve));
+    },
+
+    /** @param {'success' | 'rate-limited' | 'other'} outcome */
+    release(ticket, outcome) {
+      const windowWasFull = fills > ticket.fills;
+      if (outcome === 'rate-limited' && ticket.seq > cutAt) {
+        limit = Math.max(1, Math.min(limit, inFlight) / 2);
+        cutAt = issued;
+      } else if (outcome === 'success' && windowWasFull) {
+        limit = Math.min(max, limit + 1 / limit);
+      }
+      inFlight--;
+      wake();
+    },
+
+    stats: () => ({ limit: slots(), inFlight, waiting: waiting.length }),
+  };
+}
+
 /**
  * @param {string} url
  * @param {string} [label] display name (never includes credentials)
  * @param {object} [options]
  * @param {Partial<typeof DEFAULT_RETRY>} [options.retry]
- * @param {(info: { label, method, attempt, delayMs, reason }) => void} [options.onRetry]
+ * @param {number} [options.maxConcurrency] most requests in flight at once; the
+ *   client lowers this on rate limits and raises it back (see createAimdLimiter)
+ * @param {(info: { label, method, attempt, delayMs, reason, concurrency }) => void} [options.onRetry]
  * @param {(ms: number) => Promise<void>} [options.sleep] injectable for tests
  * @param {() => number} [options.now] injectable clock for tests
  */
@@ -113,6 +172,7 @@ export function createClient(url, label = labelFor(url), options = {}) {
   const retry = { ...DEFAULT_RETRY, ...options.retry };
   const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const now = options.now ?? Date.now;
+  const limiter = createAimdLimiter({ max: options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY });
   let nextId = 0;
 
   // When the provider rate-limits any request, every request to it waits
@@ -175,16 +235,23 @@ export function createClient(url, label = labelFor(url), options = {}) {
   async function request(method, params = []) {
     for (let n = 0; ; n++) {
       await waitOutPause();
+      // Hold a slot only while the request is on the wire, not while waiting.
+      const ticket = await limiter.acquire();
       try {
-        return await attempt(method, params);
+        const result = await attempt(method, params);
+        limiter.release(ticket, 'success');
+        return result;
       } catch (err) {
+        limiter.release(ticket, err.retry === 'always' ? 'rate-limited' : 'other');
         const retryable = err.retry === 'always' || (err.retry === 'read-only' && READ_ONLY.test(method));
         if (!retryable || n >= retry.retries) {
           const suffix = retryable && n > 0 ? ` (gave up after ${n} ${n === 1 ? 'retry' : 'retries'})` : '';
           throw new Error(`${err.message}${suffix}`);
         }
         const delayMs = Math.min(retry.maxDelayMs, err.retryAfterMs ?? backoffDelay(n, retry));
-        options.onRetry?.({ label, method, attempt: n + 1, delayMs, reason: err.message });
+        options.onRetry?.({
+          label, method, attempt: n + 1, delayMs, reason: err.message, concurrency: limiter.stats().limit,
+        });
         if (err.retry === 'always') {
           // Rate limited: pause the whole client, not just this request.
           pausedUntil = Math.max(pausedUntil, now() + delayMs);
@@ -199,6 +266,8 @@ export function createClient(url, label = labelFor(url), options = {}) {
   return {
     label,
     request,
+    /** Current concurrency limit and load, e.g. to report how far it backed off. */
+    stats: limiter.stats,
     // fullTransactions: true returns transaction objects instead of hashes.
     getBlock: (n, fullTransactions = false) => request('eth_getBlockByNumber', [toTag(n), fullTransactions]),
     getBlockByHash: (hash, fullTransactions = false) => request('eth_getBlockByHash', [hash, fullTransactions]),

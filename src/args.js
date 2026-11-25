@@ -2,7 +2,7 @@ import { parseArgs } from 'node:util';
 
 export const DEFAULT_LAST = 100n;
 
-const options = {
+const OPTIONS = {
   from: { type: 'string' },
   to: { type: 'string' },
   last: { type: 'string' },
@@ -10,7 +10,11 @@ const options = {
   concurrency: { type: 'string' },
   confirmations: { type: 'string' },
   full: { type: 'boolean' },
+  verbose: { type: 'boolean' },
+  json: { type: 'boolean' },
 };
+
+export const ALL_OPTIONS = Object.keys(OPTIONS);
 
 function toBlockNumber(name, value) {
   if (!/^\d+$/.test(value)) throw new Error(`--${name} must be a non-negative integer, got "${value}"`);
@@ -18,11 +22,17 @@ function toBlockNumber(name, value) {
 }
 
 /**
- * Parse --from, --to and --last into bigints, --checkpoint into a lowercase
- * block hash, --concurrency into a number, --confirmations into a bigint and
- * --full into true. Absent options are undefined.
+ * Parse command-line options. --from, --to and --last become bigints,
+ * --checkpoint a lowercase block hash, --concurrency a number,
+ * --confirmations a bigint, and --full, --verbose and --json true. Absent
+ * options are undefined.
+ *
+ * @param {string[]} argv
+ * @param {string[]} [allowed] the options this command accepts; any other
+ *   option is rejected rather than silently ignored
  */
-export function parseRangeArgs(argv) {
+export function parseOptions(argv, allowed = ALL_OPTIONS) {
+  const options = Object.fromEntries(allowed.map((name) => [name, OPTIONS[name]]));
   const { values } = parseArgs({ args: argv, options, strict: true });
   const parsed = {};
   for (const name of ['from', 'to', 'last']) {
@@ -42,6 +52,8 @@ export function parseRangeArgs(argv) {
   }
   if (values.confirmations !== undefined) parsed.confirmations = toBlockNumber('confirmations', values.confirmations);
   if (values.full) parsed.full = true;
+  if (values.verbose) parsed.verbose = true;
+  if (values.json) parsed.json = true;
   return parsed;
 }
 

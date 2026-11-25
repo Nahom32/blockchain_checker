@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseRangeArgs, resolveRange } from '../src/range.js';
+import { parseOptions, resolveRange } from '../src/args.js';
 
 const latest = 1000n;
-const range = (argv) => resolveRange(parseRangeArgs(argv), latest);
+const range = (argv) => resolveRange(parseOptions(argv), latest);
 
 test('defaults to the last 100 blocks', () => {
   assert.deepEqual(range([]), { from: 901n, to: 1000n });
@@ -41,23 +41,30 @@ test('invalid ranges are rejected', () => {
 
 test('--checkpoint is parsed and validated', () => {
   const hash = '0x' + 'AB'.repeat(32);
-  assert.deepEqual(parseRangeArgs(['--checkpoint', hash, '--last', '5']), { last: 5n, checkpoint: hash.toLowerCase() });
-  assert.throws(() => parseRangeArgs(['--checkpoint', '0x1234']), /32-byte block hash/);
-  assert.throws(() => parseRangeArgs(['--checkpoint', hash, '--to', '5']), /do not combine it with --to/);
+  assert.deepEqual(parseOptions(['--checkpoint', hash, '--last', '5']), { last: 5n, checkpoint: hash.toLowerCase() });
+  assert.throws(() => parseOptions(['--checkpoint', '0x1234']), /32-byte block hash/);
+  assert.throws(() => parseOptions(['--checkpoint', hash, '--to', '5']), /do not combine it with --to/);
 });
 
 test('--concurrency is parsed and validated', () => {
-  assert.deepEqual(parseRangeArgs(['--concurrency', '4']), { concurrency: 4 });
-  assert.throws(() => parseRangeArgs(['--concurrency', '0']), /at least 1/);
-  assert.throws(() => parseRangeArgs(['--concurrency', 'x']), /non-negative integer/);
+  assert.deepEqual(parseOptions(['--concurrency', '4']), { concurrency: 4 });
+  assert.throws(() => parseOptions(['--concurrency', '0']), /at least 1/);
+  assert.throws(() => parseOptions(['--concurrency', 'x']), /non-negative integer/);
 });
 
 test('--confirmations is parsed', () => {
-  assert.deepEqual(parseRangeArgs(['--confirmations', '12']), { confirmations: 12n });
-  assert.throws(() => parseRangeArgs(['--confirmations', 'x']), /non-negative integer/);
+  assert.deepEqual(parseOptions(['--confirmations', '12']), { confirmations: 12n });
+  assert.throws(() => parseOptions(['--confirmations', 'x']), /non-negative integer/);
 });
 
-test('--full is parsed', () => {
-  assert.deepEqual(parseRangeArgs(['--full']), { full: true });
-  assert.deepEqual(parseRangeArgs([]), {});
+test('--full and --verbose are parsed', () => {
+  assert.deepEqual(parseOptions(['--full', '--verbose']), { full: true, verbose: true });
+  assert.deepEqual(parseOptions([]), {});
+});
+
+test('a command only accepts the options it declares', () => {
+  const compareOptions = ['from', 'to', 'last', 'concurrency', 'confirmations'];
+  assert.deepEqual(parseOptions(['--last', '5'], compareOptions), { last: 5n });
+  assert.throws(() => parseOptions(['--full'], compareOptions), /Unknown option '--full'/);
+  assert.throws(() => parseOptions(['--checkpoint', `0x${'ab'.repeat(32)}`], compareOptions), /Unknown option '--checkpoint'/);
 });

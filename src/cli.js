@@ -1,0 +1,71 @@
+#!/usr/bin/env node
+import 'dotenv/config';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { printer, processIO } from './output.js';
+import { EXIT, EXIT_CODES_HELP } from './exit.js';
+import * as checkLocal from './commands/check-local.js';
+import * as compare from './commands/compare.js';
+import * as tamper from './commands/tamper.js';
+import * as verify from './commands/verify.js';
+
+// Entry point: blockchain-checker <command> [options]
+
+export const COMMANDS = { verify, compare, tamper, 'check-local': checkLocal };
+
+function usage() {
+  const width = Math.max(...Object.keys(COMMANDS).map((name) => name.length));
+  const list = Object.entries(COMMANDS)
+    .map(([name, command]) => `  ${name.padEnd(width)}  ${command.summary}`)
+    .join('\n');
+  return `Usage: blockchain-checker <command> [options]
+
+Commands:
+${list}
+
+Run 'blockchain-checker <command> --help' for a command's options.
+
+${EXIT_CODES_HELP}`;
+}
+
+/**
+ * @param {string[]} argv arguments after the program name
+ * @param {import('./output.js').IO} [io]
+ * @returns {Promise<number>} exit code
+ */
+export async function main(argv, io = processIO()) {
+  const print = printer(io);
+  const [name, ...rest] = argv;
+
+  if (name === undefined || name === 'help' || name === '--help' || name === '-h') {
+    print.log(usage());
+    return EXIT.OK;
+  }
+  const command = COMMANDS[name];
+  if (!command) {
+    print.error(`Unknown command '${name}'.\n\n${usage()}`);
+    return EXIT.ERROR;
+  }
+  if (rest.includes('--help') || rest.includes('-h')) {
+    print.log(command.usage);
+    return EXIT.OK;
+  }
+  return command.run(rest, io);
+}
+
+/**
+ * True when this file is the program being run. Compares real paths, because
+ * an installed bin is a symlink: process.argv[1] is the link, not this file.
+ */
+function isEntryPoint() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
+  process.exitCode = await main(process.argv.slice(2));
+}

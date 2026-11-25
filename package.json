@@ -4,13 +4,13 @@
   "description": "This is a blockchain checker",
   "type": "module",
   "scripts": {
-    "start": "node integrity_checker.js",
+    "start": "node src/cli.js verify",
     "compare": "node compare_providers.js",
     "tamper": "node tamper_checker.js",
     "node": "hardhat node",
     "check:local": "node scripts/check-local-node.js",
     "check:fork": "node scripts/check-fork.js",
-    "test": "node --test"
+    "test": "node --test \"test/**/*.test.js\""
   },
   "author": "NSG",
   "license": "MIT",

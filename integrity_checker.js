@@ -1,4 +1,4 @@
-import { web3 } from './src/provider.js';
+import { web3, getRawBlock } from './src/provider.js';
 
 async function verifyBlockchainIntegrity() {
   try {
@@ -7,7 +7,7 @@ async function verifyBlockchainIntegrity() {
 
     let previousBlockHash = null;
     for (let i = 0; i <= latestBlockNumber; i++) {
-      const block = await web3.eth.getBlock(i);
+      const block = await getRawBlock(i);
 
       
       if (i === 0) {
@@ -45,7 +45,7 @@ async function getBlockHashes() {
     console.log(`Latest Block Number: ${latestBlockNumber}`);
 
     for (let i = 0; i <= latestBlockNumber; i++) {
-      const block = await web3.eth.getBlock(i);
+      const block = await getRawBlock(i);
       console.log(`Block ${i}:`);
       console.log(`Hash: ${block.hash}`);
       console.log(`Parent Hash: ${block.parentHash}`);

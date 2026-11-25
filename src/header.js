@@ -22,7 +22,7 @@ export function inferHardfork(block) {
 
 /**
  * Rebuild an Ethereum block header from JSON-RPC block fields (as returned by
- * web3.eth.getBlock or a raw eth_getBlockByNumber call).
+ * a raw eth_getBlockByNumber call).
  */
 export function headerFromRpcBlock(block) {
   const common = new Common({ chain: Mainnet, hardfork: inferHardfork(block) });

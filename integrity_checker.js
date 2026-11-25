@@ -1,12 +1,12 @@
 import { getBlockNumber, getRawBlock, getRawBlockByHash, rawRequest } from './src/provider.js';
 import { verifyFromCheckpoint, verifyRange } from './src/chain.js';
 import { checkBodyRoots, fetchBlockReceipts } from './src/body.js';
-import { parseRangeArgs, resolveRange } from './src/range.js';
+import { parseOptions, resolveRange } from './src/args.js';
 
 // Verify each block's header hash and its link to the previous block.
 // Usage:
 //   node integrity_checker.js [--last N] [--from A] [--to B]
-//     Defaults to the last 100 blocks. See src/range.js for how options combine.
+//     Defaults to the last 100 blocks. See src/args.js for how options combine.
 //   node integrity_checker.js --checkpoint <trusted block hash> [--last N | --from A]
 //     Verify backward from a block hash you trust (e.g. a finalized block from
 //     a block explorer). Every verified block is tied to that hash, so the node
@@ -92,7 +92,7 @@ async function checkFromCheckpoint(args) {
 }
 
 async function main() {
-  const args = parseRangeArgs(process.argv.slice(2));
+  const args = parseOptions(process.argv.slice(2), ['from', 'to', 'last', 'checkpoint', 'concurrency', 'full']);
   const ok = args.checkpoint ? await checkFromCheckpoint(args) : await checkRange(args);
   if (!ok) process.exitCode = 1;
 }

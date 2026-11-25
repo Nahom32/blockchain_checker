@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { clientsFromEnv } from './src/rpc.js';
 import { compareRange, describe, getFinality, kindOf, providerWarnings } from './src/compare.js';
-import { parseRangeArgs, resolveRange } from './src/range.js';
+import { parseOptions, resolveRange } from './src/args.js';
 
 // Compare blocks across several RPC providers (WEB3_PROVIDER_URLS, comma-separated).
 // Usage: node compare_providers.js [--last N] [--from A] [--to B] [--concurrency N] [--confirmations N]
@@ -28,8 +28,7 @@ async function reachable(clients) {
 }
 
 async function main() {
-  const args = parseRangeArgs(process.argv.slice(2));
-  if (args.checkpoint) throw new Error('--checkpoint is not supported here; use integrity_checker.js');
+  const args = parseOptions(process.argv.slice(2), ['from', 'to', 'last', 'concurrency', 'confirmations']);
 
   const up = await reachable(clientsFromEnv());
   if (up.length < 2) {

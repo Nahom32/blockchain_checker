@@ -20,3 +20,11 @@ export async function getRawBlock(blockNumber, fullTransactions = false) {
     params: [tag, fullTransactions],
   });
 }
+
+/** Fetch a block by hash straight from JSON-RPC (eth_getBlockByHash). See getRawBlock. */
+export async function getRawBlockByHash(blockHash, fullTransactions = false) {
+  return web3.requestManager.send({
+    method: 'eth_getBlockByHash',
+    params: [blockHash, fullTransactions],
+  });
+}

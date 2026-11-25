@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { checkBlock, verifyRange } from '../src/chain.js';
+import { checkBlock, verifyFromCheckpoint, verifyRange } from '../src/chain.js';
 import { verifyHeaderHash } from '../src/header.js';
 
 // Five consecutive mainnet blocks (22431084..22431088), headers only.
@@ -66,4 +66,51 @@ test('genesis must have a zero parentHash', () => {
 
   const forged = { ...blocks.genesis, parentHash: '0x' + '11'.repeat(32) };
   assert.ok(checkBlock(forged, null).problems.some((p) => p.includes('genesis parentHash')));
+});
+
+// --- verifyFromCheckpoint -------------------------------------------------
+
+const top = sequence.at(-1);
+
+function fromCheckpoint(blocks, checkpointHash = top.hash, from = first) {
+  const checkpointBlock = blocks.at(-1);
+  return verifyFromCheckpoint({ checkpointHash, checkpointBlock, from, fetchBlock: fetcherFor(blocks) });
+}
+
+test('a range verifies backward from a trusted checkpoint', async () => {
+  const { checked, failed, brokenAt } = await fromCheckpoint(sequence);
+  assert.equal(checked, 5);
+  assert.deepEqual(failed, []);
+  assert.equal(brokenAt, null);
+});
+
+test('a checkpoint block that does not match the trusted hash fails immediately', async () => {
+  const wrong = '0x' + 'ab'.repeat(32);
+  const { checked, brokenAt, failed } = await fromCheckpoint(sequence, wrong);
+  assert.equal(checked, 1);
+  assert.equal(brokenAt, last);
+  assert.match(failed[0].problems[0], /not the checkpoint/);
+});
+
+test('a forged block below the checkpoint breaks the chain of trust there', async () => {
+  // Even a forgery with a self-consistent hash can't match the parentHash
+  // its trusted child commits to.
+  const blocks = structuredClone(sequence);
+  blocks[1].miner = '0x000000000000000000000000000000000000dead';
+  blocks[1].hash = verifyHeaderHash(blocks[1]).expected;
+
+  const { checked, brokenAt, failed } = await fromCheckpoint(blocks);
+  assert.equal(brokenAt, first + 1n);
+  assert.equal(checked, 4);
+  assert.match(failed[0].problems[0], /says its parent is/);
+});
+
+test('a node returning the wrong block number is caught', async () => {
+  const blocks = structuredClone(sequence);
+  const fetchBlock = async (n) => (n === first + 2n ? blocks[0] : fetcherFor(blocks)(n));
+  const { brokenAt, failed } = await verifyFromCheckpoint({
+    checkpointHash: top.hash, checkpointBlock: blocks.at(-1), from: first, fetchBlock,
+  });
+  assert.equal(brokenAt, first + 2n);
+  assert.match(failed[0].problems[0], /asked for block/);
 });

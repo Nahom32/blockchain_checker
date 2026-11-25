@@ -38,3 +38,10 @@ test('invalid ranges are rejected', () => {
   assert.throws(() => range(['--from', 'abc']), /non-negative integer/);
   assert.throws(() => range(['--bogus']), /Unknown option/);
 });
+
+test('--checkpoint is parsed and validated', () => {
+  const hash = '0x' + 'AB'.repeat(32);
+  assert.deepEqual(parseRangeArgs(['--checkpoint', hash, '--last', '5']), { last: 5n, checkpoint: hash.toLowerCase() });
+  assert.throws(() => parseRangeArgs(['--checkpoint', '0x1234']), /32-byte block hash/);
+  assert.throws(() => parseRangeArgs(['--checkpoint', hash, '--to', '5']), /do not combine it with --to/);
+});

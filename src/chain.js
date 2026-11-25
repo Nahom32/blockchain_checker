@@ -72,3 +72,59 @@ export async function verifyRange({ from, to, fetchBlock, onBlock }) {
 
   return { checked, failed };
 }
+
+/**
+ * Verify blocks backward from a trusted checkpoint hash down to `from`.
+ *
+ * The checkpoint block must hash to the trusted hash, and each block below it
+ * must hash to its child's parentHash. Every verified block is therefore
+ * cryptographically tied to the one hash you trust; the node is not trusted.
+ * Verification stops at the first break, since nothing below it is anchored.
+ *
+ * @param {object} opts
+ * @param {string} opts.checkpointHash trusted block hash
+ * @param {object} opts.checkpointBlock the block the node returned for that hash
+ * @param {bigint} opts.from lowest block number to verify
+ * @param {(n: bigint) => Promise<object|null>} opts.fetchBlock
+ * @param {(result: object) => void} [opts.onBlock]
+ * @returns {Promise<{ checked: number, failed: object[], brokenAt: bigint | null }>}
+ */
+export async function verifyFromCheckpoint({ checkpointHash, checkpointBlock, from, fetchBlock, onBlock }) {
+  let trustedHash = checkpointHash.toLowerCase();
+  let checked = 0;
+
+  for (let n = BigInt(checkpointBlock.number); n >= from; n--) {
+    const block = checked === 0 ? checkpointBlock : await fetchBlock(n);
+    const problems = [];
+    let hash = null;
+
+    if (!block) {
+      problems.push('block not found');
+    } else {
+      const header = verifyHeaderHash(block);
+      hash = header.expected;
+      if (BigInt(block.number) !== n) {
+        problems.push(`asked for block ${n}, got ${BigInt(block.number)}`);
+      } else if (hash === null) {
+        problems.push(`header could not be rebuilt: ${header.error}`);
+      } else if (hash !== trustedHash) {
+        problems.push(
+          checked === 0
+            ? `fields hash to ${hash}, not the checkpoint ${trustedHash}`
+            : `fields hash to ${hash}, but block ${n + 1n} says its parent is ${trustedHash}`,
+        );
+      }
+      if (problems.length === 0 && n === 0n && block.parentHash !== ZERO_HASH) {
+        problems.push(`genesis parentHash should be zero, got ${block.parentHash}`);
+      }
+    }
+
+    checked++;
+    const result = { number: n, hash, problems };
+    onBlock?.(result);
+    if (problems.length > 0) return { checked, failed: [result], brokenAt: n };
+    trustedHash = block.parentHash.toLowerCase();
+  }
+
+  return { checked, failed: [], brokenAt: null };
+}

@@ -71,25 +71,41 @@ export async function compareRange({ clients, from, to, concurrency, onBlock }) 
 export const DEFAULT_CONFIRMATIONS = 64n; // about two epochs on Ethereum mainnet
 
 /**
- * The highest block number every provider considers finalized: the lowest of
- * their 'finalized' blocks. A provider without the 'finalized' tag counts as
+ * Work out which blocks are finalized.
+ *
+ * A block counts as finalized if ANY provider says it is, so the boundary is
+ * the HIGHEST 'finalized' block reported. Taking the lowest would let one
+ * dishonest provider claim finalized = 0 and have every block it forged
+ * excused as a reorg. With the highest, a liar can only claim too much
+ * finality, which turns a genuine reorg into a loud false alarm: something to
+ * investigate, never a missed attack.
+ *
+ * Each claim is capped at that provider's own head (a block it hasn't seen
+ * can't be finalized). A provider without the 'finalized' tag counts as
  * finalized up to its head minus `confirmations`.
  *
  * @param {Array<{ client, head: bigint }>} providers
+ * @returns {Promise<{ boundary: bigint, providers: Array<{ label: string, head: bigint,
+ *   finalized: bigint, source: 'tag' | 'confirmations' }> }>}
  */
-export async function finalizedBoundary(providers, confirmations = DEFAULT_CONFIRMATIONS) {
-  const numbers = await Promise.all(
+export async function getFinality(providers, confirmations = DEFAULT_CONFIRMATIONS) {
+  const perProvider = await Promise.all(
     providers.map(async ({ client, head }) => {
+      const info = { label: client.label, head };
       try {
         const block = await client.request('eth_getBlockByNumber', ['finalized', false]);
-        if (block) return BigInt(block.number);
+        if (block) {
+          const claimed = BigInt(block.number);
+          return { ...info, finalized: claimed < head ? claimed : head, source: 'tag' };
+        }
       } catch {
         // Tag unsupported (pre-merge chains, some nodes): fall back below.
       }
-      return head > confirmations ? head - confirmations : 0n;
+      return { ...info, finalized: head > confirmations ? head - confirmations : 0n, source: 'confirmations' };
     }),
   );
-  return numbers.reduce((a, b) => (a < b ? a : b));
+  const boundary = perProvider.map((p) => p.finalized).reduce((a, b) => (a > b ? a : b));
+  return { boundary, providers: perProvider };
 }
 
 /**

@@ -74,8 +74,9 @@ export function createClient(url, label = labelFor(url)) {
   return {
     label,
     request,
-    getBlock: (n) => request('eth_getBlockByNumber', [toTag(n), false]),
-    getBlockByHash: (hash) => request('eth_getBlockByHash', [hash, false]),
+    // fullTransactions: true returns transaction objects instead of hashes.
+    getBlock: (n, fullTransactions = false) => request('eth_getBlockByNumber', [toTag(n), fullTransactions]),
+    getBlockByHash: (hash, fullTransactions = false) => request('eth_getBlockByHash', [hash, fullTransactions]),
     getBlockNumber: async () => BigInt(await request('eth_blockNumber')),
   };
 }

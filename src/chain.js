@@ -53,9 +53,11 @@ export function checkBlock(block, parent) {
  * @param {(n: bigint) => Promise<object|null>} opts.fetchBlock raw block fetcher
  * @param {(result: ReturnType<typeof checkBlock>) => void} [opts.onBlock] progress callback
  * @param {number} [opts.concurrency] max requests in flight (see fetchInOrder)
+ * @param {(block: object) => Promise<string[]>} [opts.checkBody] extra per-block
+ *   checks (e.g. transaction, receipt and withdrawal roots); returns problems
  * @returns {Promise<{ checked: number, failed: ReturnType<typeof checkBlock>[] }>}
  */
-export async function verifyRange({ from, to, fetchBlock, onBlock, concurrency }) {
+export async function verifyRange({ from, to, fetchBlock, onBlock, concurrency, checkBody }) {
   const failed = [];
   let checked = 0;
   let parent = null;
@@ -64,6 +66,7 @@ export async function verifyRange({ from, to, fetchBlock, onBlock, concurrency }
     const result = block
       ? checkBlock(block, parent)
       : { number: n, hash: null, problems: ['block not found'] };
+    if (block && checkBody) result.problems.push(...(await checkBody(block)));
 
     checked++;
     if (result.problems.length > 0) failed.push(result);
@@ -80,7 +83,9 @@ export async function verifyRange({ from, to, fetchBlock, onBlock, concurrency }
  * The checkpoint block must hash to the trusted hash, and each block below it
  * must hash to its child's parentHash. Every verified block is therefore
  * cryptographically tied to the one hash you trust; the node is not trusted.
- * Verification stops at the first break, since nothing below it is anchored.
+ * Verification stops at the first header break, since nothing below it is
+ * anchored. Body problems (from `checkBody`) are recorded but don't stop the
+ * walk: the header is still trusted, the node just lied about its contents.
  *
  * @param {object} opts
  * @param {string} opts.checkpointHash trusted block hash
@@ -89,11 +94,15 @@ export async function verifyRange({ from, to, fetchBlock, onBlock, concurrency }
  * @param {(n: bigint) => Promise<object|null>} opts.fetchBlock
  * @param {(result: object) => void} [opts.onBlock]
  * @param {number} [opts.concurrency] max requests in flight (see fetchInOrder)
+ * @param {(block: object) => Promise<string[]>} [opts.checkBody] see verifyRange
  * @returns {Promise<{ checked: number, failed: object[], brokenAt: bigint | null }>}
  */
-export async function verifyFromCheckpoint({ checkpointHash, checkpointBlock, from, fetchBlock, onBlock, concurrency }) {
+export async function verifyFromCheckpoint({
+  checkpointHash, checkpointBlock, from, fetchBlock, onBlock, concurrency, checkBody,
+}) {
   let trustedHash = checkpointHash.toLowerCase();
   let checked = 0;
+  const failed = [];
 
   const top = BigInt(checkpointBlock.number);
   const fetchOrReuse = (n) => (n === top ? Promise.resolve(checkpointBlock) : fetchBlock(n));
@@ -123,12 +132,16 @@ export async function verifyFromCheckpoint({ checkpointHash, checkpointBlock, fr
       }
     }
 
+    const headerBroken = problems.length > 0;
+    if (!headerBroken && checkBody) problems.push(...(await checkBody(block)));
+
     checked++;
     const result = { number: n, hash, problems };
+    if (problems.length > 0) failed.push(result);
     onBlock?.(result);
-    if (problems.length > 0) return { checked, failed: [result], brokenAt: n };
+    if (headerBroken) return { checked, failed, brokenAt: n };
     trustedHash = block.parentHash.toLowerCase();
   }
 
-  return { checked, failed: [], brokenAt: null };
+  return { checked, failed, brokenAt: null };
 }

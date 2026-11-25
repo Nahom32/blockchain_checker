@@ -56,3 +56,8 @@ test('--confirmations is parsed', () => {
   assert.deepEqual(parseRangeArgs(['--confirmations', '12']), { confirmations: 12n });
   assert.throws(() => parseRangeArgs(['--confirmations', 'x']), /non-negative integer/);
 });
+
+test('--full is parsed', () => {
+  assert.deepEqual(parseRangeArgs(['--full']), { full: true });
+  assert.deepEqual(parseRangeArgs([]), {});
+});

@@ -28,3 +28,8 @@ export async function getRawBlockByHash(blockHash, fullTransactions = false) {
     params: [blockHash, fullTransactions],
   });
 }
+
+/** Send a raw JSON-RPC request through the configured provider. */
+export function rawRequest(method, params = []) {
+  return web3.requestManager.send({ method, params });
+}

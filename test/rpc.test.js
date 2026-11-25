@@ -76,6 +76,9 @@ test('the client sends raw JSON-RPC requests and returns results', async () => {
   assert.equal(await client.getBlockNumber(), 42n);
   assert.deepEqual(await client.getBlock(16n), { number: '0x10', hash: '0xabc' });
   assert.deepEqual(requests.at(-1), { url: '/rpc', method: 'eth_getBlockByNumber', params: ['0x10', false] });
+
+  await client.getBlock(16n, true);
+  assert.deepEqual(requests.at(-1).params, ['0x10', true]);
 });
 
 test('RPC and HTTP errors name the provider by label only', async () => {

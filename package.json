@@ -2,15 +2,16 @@
   "name": "blockchain_checker",
   "version": "1.0.0",
   "description": "This is a blockchain checker",
-  "main": "index.js",
+  "type": "module",
   "scripts": {
-    "test": "test"
+    "start": "node integrity_checker.js",
+    "tamper": "node tamper_checker.js",
+    "test": "node --test"
   },
   "author": "NSG",
   "license": "MIT",
   "dependencies": {
     "dotenv": "^16.4.5",
     "web3": "^4.9.0"
-  },
-  "type": "module"
+  }
 }

@@ -67,11 +67,19 @@ export function headerFromRpcBlock(block) {
  * Recompute keccak256(RLP(header)) from the block's fields and compare it with
  * the hash the node reported.
  *
- * @returns {{ valid: boolean, expected: string, actual: string }}
+ * @returns {{ valid: boolean, expected: string | null, actual: string, error?: string }}
  *   `expected` is the hash recomputed from the fields; `actual` is block.hash.
+ *   If the fields are malformed or self-inconsistent (e.g. gasUsed > gasLimit)
+ *   the header can't be rebuilt: `valid` is false, `expected` is null and
+ *   `error` says why. Tampered data must be reported, never thrown.
  */
 export function verifyHeaderHash(block) {
-  const expected = bytesToHex(headerFromRpcBlock(block).hash());
   const actual = String(block.hash).toLowerCase();
+  let expected;
+  try {
+    expected = bytesToHex(headerFromRpcBlock(block).hash());
+  } catch (err) {
+    return { valid: false, expected: null, actual, error: err.message };
+  }
   return { valid: expected === actual, expected, actual };
 }

@@ -2,6 +2,7 @@ import { parseArgs } from 'node:util';
 import { createClient, DEFAULT_URL } from '../rpc.js';
 import { verifyHeaderHash } from '../header.js';
 import { printer } from '../output.js';
+import { EXIT } from '../exit.js';
 
 export const summary = 'demonstrate that editing a block is detected';
 
@@ -40,7 +41,7 @@ export async function run(argv, io) {
     const block = await client.getBlock(blockArg === 'latest' ? 'latest' : BigInt(blockArg));
     if (!block) {
       print.error(`Block ${blockArg} not found.`);
-      return 1;
+      return EXIT.ERROR;
     }
 
     print.log(`Checking block ${BigInt(block.number)} (${block.hash})\n`);
@@ -54,11 +55,11 @@ export async function run(argv, io) {
 
     if (!originalValid || tamperedValid) {
       print.error('\nUnexpected result: the original should be valid and the tampered copy invalid.');
-      return 1;
+      return EXIT.PROBLEMS;
     }
-    return 0;
+    return EXIT.OK;
   } catch (error) {
     print.error(`Error simulating tampering: ${error.message ?? error}`);
-    return 1;
+    return EXIT.ERROR;
   }
 }

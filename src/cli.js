@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { pathToFileURL } from 'node:url';
 import { printer, processIO } from './output.js';
+import { EXIT, EXIT_CODES_HELP } from './exit.js';
 import * as checkLocal from './commands/check-local.js';
 import * as compare from './commands/compare.js';
 import * as tamper from './commands/tamper.js';
@@ -20,7 +21,9 @@ function usage() {
 Commands:
 ${list}
 
-Run 'blockchain-checker <command> --help' for a command's options.`;
+Run 'blockchain-checker <command> --help' for a command's options.
+
+${EXIT_CODES_HELP}`;
 }
 
 /**
@@ -34,16 +37,16 @@ export async function main(argv, io = processIO()) {
 
   if (name === undefined || name === 'help' || name === '--help' || name === '-h') {
     print.log(usage());
-    return 0;
+    return EXIT.OK;
   }
   const command = COMMANDS[name];
   if (!command) {
     print.error(`Unknown command '${name}'.\n\n${usage()}`);
-    return 1;
+    return EXIT.ERROR;
   }
   if (rest.includes('--help') || rest.includes('-h')) {
     print.log(command.usage);
-    return 0;
+    return EXIT.OK;
   }
   return command.run(rest, io);
 }

@@ -2,6 +2,7 @@ import { createClient, DEFAULT_URL } from '../rpc.js';
 import { parseOptions } from '../args.js';
 import { inferHardfork, verifyHeaderHash } from '../header.js';
 import { printer } from '../output.js';
+import { EXIT } from '../exit.js';
 
 export const summary = 'end-to-end check against a local dev chain';
 
@@ -52,9 +53,9 @@ export async function run(argv, io) {
     }
 
     print.log(failures === 0 ? `\nAll ${latest + 1n} blocks verified.` : `\n${failures} problem(s) found.`);
-    return failures === 0 ? 0 : 1;
+    return failures === 0 ? EXIT.OK : EXIT.PROBLEMS;
   } catch (error) {
     print.error(`Error checking the local chain: ${error.message ?? error}`);
-    return 1;
+    return EXIT.ERROR;
   }
 }

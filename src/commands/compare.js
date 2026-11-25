@@ -2,6 +2,7 @@ import { clientsFromEnv } from '../rpc.js';
 import { compareRange, describe, getFinality, kindOf, providerWarnings } from '../compare.js';
 import { parseOptions, resolveRange } from '../args.js';
 import { printer } from '../output.js';
+import { EXIT } from '../exit.js';
 import { detailsLine, retryCounter } from '../summary.js';
 
 export const summary = 'compare blocks across several providers';
@@ -27,7 +28,8 @@ block counts as finalized if ANY provider says so, so one provider can't
 excuse its forgeries by claiming low finality.
 
 Exit code: 0 all agree, 1 providers disagree on a finalized block,
-2 only unfinalized disagreements or incomplete results.`;
+2 only unfinalized disagreements or incomplete results, 3 couldn't run
+(e.g. fewer than 2 reachable providers).`;
 
 const OPTIONS = ['from', 'to', 'last', 'concurrency', 'confirmations', 'verbose'];
 
@@ -55,7 +57,7 @@ export async function run(argv, io) {
     const up = await reachable(clientsFromEnv(io.env, { onRetry: retries.onRetry }), print);
     if (up.length < 2) {
       print.error(`Need at least 2 reachable providers to compare, have ${up.length}. Set WEB3_PROVIDER_URLS.`);
-      return 1;
+      return EXIT.ERROR;
     }
 
     // Only compare blocks every provider should have.
@@ -88,9 +90,10 @@ export async function run(argv, io) {
         `${unfinalized} disagree before finality, ${incomplete} incomplete.`,
     );
     print.log(detailsLine({ from, to, elapsedMs: Date.now() - started, retries }));
-    return conflicts > 0 ? 1 : unfinalized + incomplete > 0 ? 2 : 0;
+    if (conflicts > 0) return EXIT.PROBLEMS;
+    return unfinalized + incomplete > 0 ? EXIT.INCONCLUSIVE : EXIT.OK;
   } catch (error) {
     print.error(`Error comparing providers: ${error.message ?? error}`);
-    return 1;
+    return EXIT.ERROR;
   }
 }

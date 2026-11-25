@@ -28,16 +28,23 @@ async function cli(argv, environment = env) {
   return { code, stdout: capture.stdout(), stderr: capture.stderr() };
 }
 
-test('with no command, prints usage listing the commands', async () => {
+test('with no command, prints usage listing the commands and exit codes', async () => {
   const { code, stdout } = await cli([]);
   assert.equal(code, 0);
   assert.match(stdout, /^Usage: blockchain-checker <command>/);
   assert.match(stdout, /verify\s+check blocks/);
+  assert.match(stdout, /Exit codes:\n {2}0 {2}every check passed\n {2}1 {2}problems found/);
+});
+
+test('a checkpoint the node does not have is a problem (exit 1), not an error', async () => {
+  const { code, stderr } = await cli(['verify', '--checkpoint', `0x${'ab'.repeat(32)}`]);
+  assert.equal(code, 1);
+  assert.match(stderr, /The node has no block with hash 0x(ab){32}\./);
 });
 
 test('an unknown command is an error', async () => {
   const { code, stderr } = await cli(['frobnicate']);
-  assert.equal(code, 1);
+  assert.equal(code, 3);
   assert.match(stderr, /Unknown command 'frobnicate'/);
 });
 
@@ -82,7 +89,7 @@ test('verify --checkpoint verifies back from a trusted hash', async () => {
 
 test('verify rejects options it does not take', async () => {
   const { code, stderr } = await cli(['verify', '--confirmations', '3']);
-  assert.equal(code, 1);
+  assert.equal(code, 3);
   assert.match(stderr, /Unknown option '--confirmations'/);
 });
 
@@ -97,7 +104,7 @@ async function closedPortUrl() {
 
 test('verify reports an unreachable node', async () => {
   const { code, stderr } = await cli(['verify'], { WEB3_PROVIDER_URL: await closedPortUrl() });
-  assert.equal(code, 1);
+  assert.equal(code, 3);
   assert.match(stderr, /Error verifying blockchain integrity: 127\.0\.0\.1:\d+: eth_blockNumber request failed \(ECONNREFUSED\)/);
 });
 
@@ -147,14 +154,14 @@ test('compare: a provider serving a forged block is reported, exit 1', async () 
 
 test('compare: needs two reachable providers', async () => {
   const { code, stderr } = await cli(['compare'], { WEB3_PROVIDER_URLS: `${chain.url},${await closedPortUrl()}` });
-  assert.equal(code, 1);
+  assert.equal(code, 3);
   assert.match(stderr, /Skipping unreachable provider/);
   assert.match(stderr, /Need at least 2 reachable providers to compare, have 1/);
 });
 
 test('compare rejects options it does not take', async () => {
   const { code, stderr } = await cli(['compare', '--full'], { WEB3_PROVIDER_URLS: chain.url });
-  assert.equal(code, 1);
+  assert.equal(code, 3);
   assert.match(stderr, /Unknown option '--full'/);
 });
 
@@ -176,15 +183,15 @@ test('tamper defaults to the latest block', async () => {
 
 test('tamper rejects a bad block argument or a missing block', async () => {
   const bad = await cli(['tamper', 'abc']);
-  assert.equal(bad.code, 1);
+  assert.equal(bad.code, 3);
   assert.match(bad.stderr, /BLOCK must be a block number or 'latest', got "abc"/);
 
   const missing = await cli(['tamper', '999']);
-  assert.equal(missing.code, 1);
+  assert.equal(missing.code, 3);
   assert.match(missing.stderr, /Block 999 not found\./);
 
   const extra = await cli(['tamper', '1', '2']);
-  assert.equal(extra.code, 1);
+  assert.equal(extra.code, 3);
   assert.match(extra.stderr, /expected at most one block number/);
 });
 
@@ -208,6 +215,6 @@ test('check-local sends transactions, mines them and verifies every block', asyn
 
 test('check-local only takes --verbose', async () => {
   const { code, stderr } = await cli(['check-local', '--last', '3']);
-  assert.equal(code, 1);
+  assert.equal(code, 3);
   assert.match(stderr, /Unknown option '--last'/);
 });

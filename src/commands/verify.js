@@ -3,6 +3,7 @@ import { verifyFromCheckpoint, verifyRange } from '../chain.js';
 import { checkBodyRoots, fetchBlockReceipts } from '../body.js';
 import { parseOptions, resolveRange } from '../args.js';
 import { printer } from '../output.js';
+import { EXIT } from '../exit.js';
 import { detailsLine, failureBreakdown, retryCounter } from '../summary.js';
 
 export const summary = "check blocks' hashes and links on one node";
@@ -23,7 +24,10 @@ Range (default: the last 100 blocks):
   --full                 also check each block's transactions, receipts and
                          withdrawals roots (slower: fetches full blocks)
   --concurrency N        block requests in flight (default 10)
-  --verbose              also list every valid block, not just problems`;
+  --verbose              also list every valid block, not just problems
+
+Exit code: 0 all valid, 1 problems found (including a node that doesn't
+have the checkpoint block), 3 couldn't run.`;
 
 const OPTIONS = ['from', 'to', 'last', 'checkpoint', 'concurrency', 'full', 'verbose'];
 
@@ -126,9 +130,9 @@ export async function run(argv, io) {
     const ok = args.checkpoint
       ? await checkFromCheckpoint(client, args, print, run)
       : await checkRange(client, args, print, run);
-    return ok ? 0 : 1;
+    return ok ? EXIT.OK : EXIT.PROBLEMS;
   } catch (error) {
     print.error(`Error verifying blockchain integrity: ${error.message ?? error}`);
-    return 1;
+    return EXIT.ERROR;
   }
 }

@@ -2,7 +2,9 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { network } from 'hardhat';
 import { verifyFromCheckpoint, verifyRange } from '../src/chain.js';
-import { fetchBlockReceipts, verifyReceiptsRoot, verifyTransactionsRoot, verifyWithdrawalsRoot } from '../src/body.js';
+import {
+  checkBodyRoots, fetchBlockReceipts, verifyReceiptsRoot, verifyTransactionsRoot, verifyWithdrawalsRoot,
+} from '../src/body.js';
 
 // Range and checkpoint verification against a real local chain. Hardhat runs
 // the chain in this process, so no separate node is needed.
@@ -165,4 +167,15 @@ test('local blocks have a valid (empty) withdrawals root', async () => {
     assert.equal(result.error, undefined);
     assert.equal(result.valid, true);
   }
+});
+
+// Hardhat's genesis header commits to keccak256("") as its transactionsRoot
+// instead of the empty-trie root, which no transaction list can produce.
+// The checker rightly flags it.
+test('Hardhat\'s genesis transactions root is flagged (keccak256 of empty bytes, not the empty trie)', async () => {
+  const genesis = await rpc('eth_getBlockByNumber', ['0x0', true]);
+  assert.equal(genesis.transactionsRoot, '0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470');
+  const problems = await checkBodyRoots(genesis, await fetchBlockReceipts(rpc, genesis));
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /^transactions root mismatch: .* contents hash to 0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421$/);
 });

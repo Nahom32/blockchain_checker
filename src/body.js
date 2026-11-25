@@ -172,3 +172,25 @@ export async function verifyWithdrawalsRoot(block) {
   }
   return { valid: expected === actual, applicable: true, expected, actual };
 }
+
+/**
+ * Check all of a block's body roots: transactions, receipts and (from
+ * Shanghai) withdrawals. Returns a list of problems, empty if all match.
+ * The block needs full transactions; `receipts` are all of its receipts.
+ */
+export async function checkBodyRoots(block, receipts) {
+  const problems = [];
+  const report = (what, result) => {
+    if (result.valid) return;
+    problems.push(
+      result.expected === null
+        ? `${what} could not be rebuilt: ${result.error}`
+        : `${what} mismatch: header says ${result.actual}, contents hash to ${result.expected}` +
+            (result.error ? ` (${result.error})` : ''),
+    );
+  };
+  report('transactions root', await verifyTransactionsRoot(block));
+  report('receipts root', await verifyReceiptsRoot(block, receipts));
+  report('withdrawals root', await verifyWithdrawalsRoot(block));
+  return problems;
+}

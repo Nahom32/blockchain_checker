@@ -6,11 +6,16 @@ import { network } from 'hardhat';
  * tested end to end exactly as they talk to a real node, without starting
  * `npm run node`.
  *
+ * @param {object} [options]
+ * @param {(method: string, params?: unknown[]) => Promise<any>} [options.rpc]
+ *   serve an existing chain (e.g. another bridge's) instead of a new one
+ * @param {(method: string, params: unknown[], result: any) => any} [options.transform]
+ *   rewrite responses, e.g. to make this "provider" lie about a block
  * @returns {Promise<{ url: string, rpc: (method: string, params?: unknown[]) => Promise<any>, close(): Promise<void> }>}
  */
-export async function startHardhatHttp() {
-  const connection = await network.create();
-  const rpc = (method, params = []) => connection.provider.request({ method, params });
+export async function startHardhatHttp({ rpc: shared, transform } = {}) {
+  const connection = shared ? null : await network.create();
+  const rpc = shared ?? ((method, params = []) => connection.provider.request({ method, params }));
 
   const server = createServer((req, res) => {
     let body = '';
@@ -19,7 +24,8 @@ export async function startHardhatHttp() {
       const { id, method, params } = JSON.parse(body);
       let reply;
       try {
-        reply = { result: await rpc(method, params) };
+        const result = await rpc(method, params);
+        reply = { result: transform ? transform(method, params, result) : result };
       } catch (err) {
         reply = { error: { code: err.code ?? -32000, message: err.message } };
       }
@@ -34,7 +40,7 @@ export async function startHardhatHttp() {
     rpc,
     close: async () => {
       await new Promise((resolve) => server.close(resolve));
-      await connection.close();
+      await connection?.close();
     },
   };
 }

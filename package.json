@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node src/cli.js verify",
-    "compare": "node compare_providers.js",
+    "compare": "node src/cli.js compare",
     "tamper": "node tamper_checker.js",
     "node": "hardhat node",
     "check:local": "node scripts/check-local-node.js",

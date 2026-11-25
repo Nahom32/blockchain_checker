@@ -2,6 +2,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { main } from '../src/cli.js';
+import { verifyHeaderHash } from '../src/header.js';
 import { captureIO, startHardhatHttp } from './helpers/hardhat-http.js';
 
 // The CLI end to end, against an in-process Hardhat chain served over HTTP.
@@ -90,4 +91,56 @@ test('verify reports an unreachable node', async () => {
   const { code, stderr } = await cli(['verify'], { WEB3_PROVIDER_URL: await closedPortUrl() });
   assert.equal(code, 1);
   assert.match(stderr, /Error verifying blockchain integrity: 127\.0\.0\.1:\d+: eth_blockNumber request failed \(ECONNREFUSED\)/);
+});
+
+// --- compare ----------------------------------------------------------------
+
+/** A second "provider" on the same chain that forges block `target`. */
+async function lyingProvider(target) {
+  return startHardhatHttp({
+    rpc: chain.rpc,
+    transform: (method, params, result) => {
+      if (method !== 'eth_getBlockByNumber' || !result || BigInt(result.number) !== target) return result;
+      const forged = { ...result, miner: '0x000000000000000000000000000000000000dead' };
+      forged.hash = verifyHeaderHash(forged).expected; // self-consistent
+      return forged;
+    },
+  });
+}
+
+test('compare: two honest providers agree', async () => {
+  const mirror = await startHardhatHttp({ rpc: chain.rpc });
+  try {
+    const { code, stdout } = await cli(['compare', '--from', '0'], { WEB3_PROVIDER_URLS: `${chain.url},${mirror.url}` });
+    assert.equal(code, 0);
+    assert.match(stdout, /Comparing blocks 0 to 5 across 2 providers/);
+    assert.match(stdout, /Checked 6 blocks: 6 agree, 0 disagree/);
+  } finally {
+    await mirror.close();
+  }
+});
+
+test('compare: a provider serving a forged block is reported, exit 1', async () => {
+  const liar = await lyingProvider(3n);
+  try {
+    const { code, stdout } = await cli(['compare', '--from', '0'], { WEB3_PROVIDER_URLS: `${chain.url},${liar.url}` });
+    assert.equal(code, 1);
+    assert.match(stdout, /Block 3: providers DISAGREE\n {2}0x[0-9a-f]{64} {2}127\.0\.0\.1:\d+\n {2}0x[0-9a-f]{64} {2}127\.0\.0\.1:\d+/);
+    assert.match(stdout, /Checked 6 blocks: 5 agree, 1 disagree/);
+  } finally {
+    await liar.close();
+  }
+});
+
+test('compare: needs two reachable providers', async () => {
+  const { code, stderr } = await cli(['compare'], { WEB3_PROVIDER_URLS: `${chain.url},${await closedPortUrl()}` });
+  assert.equal(code, 1);
+  assert.match(stderr, /Skipping unreachable provider/);
+  assert.match(stderr, /Need at least 2 reachable providers to compare, have 1/);
+});
+
+test('compare rejects options it does not take', async () => {
+  const { code, stderr } = await cli(['compare', '--full'], { WEB3_PROVIDER_URLS: chain.url });
+  assert.equal(code, 1);
+  assert.match(stderr, /Unknown option '--full'/);
 });

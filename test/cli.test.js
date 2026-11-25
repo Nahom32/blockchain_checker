@@ -144,3 +144,33 @@ test('compare rejects options it does not take', async () => {
   assert.equal(code, 1);
   assert.match(stderr, /Unknown option '--full'/);
 });
+
+// --- tamper -----------------------------------------------------------------
+
+test('tamper: a real block verifies and an edited copy does not', async () => {
+  const { code, stdout } = await cli(['tamper', '3']);
+  assert.equal(code, 0);
+  assert.match(stdout, /^Checking block 3 \(0x[0-9a-f]{64}\)/);
+  assert.match(stdout, /Original block: valid/);
+  assert.match(stdout, /Tampered block: TAMPERED\n {2}reported hash: {3}0x[0-9a-f]{64}\n {2}recomputed hash: 0x[0-9a-f]{64}/);
+});
+
+test('tamper defaults to the latest block', async () => {
+  const { code, stdout } = await cli(['tamper']);
+  assert.equal(code, 0);
+  assert.match(stdout, /^Checking block 5 /);
+});
+
+test('tamper rejects a bad block argument or a missing block', async () => {
+  const bad = await cli(['tamper', 'abc']);
+  assert.equal(bad.code, 1);
+  assert.match(bad.stderr, /BLOCK must be a block number or 'latest', got "abc"/);
+
+  const missing = await cli(['tamper', '999']);
+  assert.equal(missing.code, 1);
+  assert.match(missing.stderr, /Block 999 not found\./);
+
+  const extra = await cli(['tamper', '1', '2']);
+  assert.equal(extra.code, 1);
+  assert.match(extra.stderr, /expected at most one block number/);
+});

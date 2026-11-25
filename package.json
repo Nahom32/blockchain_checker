@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/cli.js verify",
     "compare": "node src/cli.js compare",
-    "tamper": "node tamper_checker.js",
+    "tamper": "node src/cli.js tamper",
     "node": "hardhat node",
     "check:local": "node scripts/check-local-node.js",
     "check:fork": "node scripts/check-fork.js",

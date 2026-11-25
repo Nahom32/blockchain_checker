@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "start": "node integrity_checker.js",
+    "compare": "node compare_providers.js",
     "tamper": "node tamper_checker.js",
     "node": "hardhat node",
-    "test": "node --test",
-    "check:local": "node scripts/check-local-node.js"
+    "check:local": "node scripts/check-local-node.js",
+    "test": "node --test"
   },
   "author": "NSG",
   "license": "MIT",

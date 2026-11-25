@@ -67,3 +67,44 @@ export async function compareRange({ clients, from, to, concurrency, onBlock }) 
 
   return { checked, disagreements };
 }
+
+/**
+ * 'agree'      every provider returned the same valid block
+ * 'conflict'   providers returned different hashes, or a block whose fields
+ *              don't match its hash: someone is serving different data
+ * 'incomplete' every block returned agrees, but some provider had no block
+ *              or the request failed, so the comparison is partial
+ */
+export function kindOf(result) {
+  if (result.agreed) return 'agree';
+  const blocks = result.responses.filter((r) => r.hash);
+  const hashes = new Set(blocks.map((r) => r.hash));
+  if (hashes.size > 1 || blocks.some((r) => !r.valid)) return 'conflict';
+  return 'incomplete';
+}
+
+/** Human-readable lines describing one non-agreeing block. */
+export function describe(result) {
+  const kind = kindOf(result);
+  const title = {
+    conflict: 'providers DISAGREE',
+    incomplete: 'not every provider returned this block',
+  }[kind];
+  const lines = [`Block ${result.number}: ${title}`];
+
+  // Group by hash and validity, so a provider serving edited fields under the
+  // real hash is listed separately from the honest ones.
+  const groups = new Map();
+  for (const r of result.responses.filter((r) => r.hash)) {
+    const key = `${r.hash}|${r.valid}`;
+    if (!groups.has(key)) groups.set(key, { hash: r.hash, valid: r.valid, labels: [] });
+    groups.get(key).labels.push(r.label);
+  }
+  for (const { hash, valid, labels } of groups.values()) {
+    const note = valid ? '' : '  (block fields do NOT hash to this)';
+    lines.push(`  ${hash}  ${labels.join(', ')}${note}`);
+  }
+  for (const r of result.responses.filter((r) => r.missing)) lines.push(`  no such block  ${r.label}`);
+  for (const r of result.responses.filter((r) => r.error)) lines.push(`  request failed  ${r.error}`);
+  return lines;
+}

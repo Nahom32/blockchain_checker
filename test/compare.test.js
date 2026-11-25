@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { compareBlock, compareRange, fetchFromAll } from '../src/compare.js';
+import { compareBlock, compareRange, describe, fetchFromAll, kindOf } from '../src/compare.js';
 import { verifyHeaderHash } from '../src/header.js';
 
 // Five consecutive mainnet blocks (22431084..22431088), headers only.
@@ -82,4 +82,57 @@ test('fetchFromAll keeps provider order', async () => {
 
 test('a single provider trivially agrees with itself', () => {
   assert.equal(compareBlock(first, [{ label: 'only', block: sequence[0] }]).agreed, true);
+});
+
+// --- reporting --------------------------------------------------------------
+
+const hashOf = (b) => b.hash.toLowerCase();
+
+test('different hashes are a conflict, listed with who reported each', () => {
+  const fake = forged(sequence[0], { miner: '0x000000000000000000000000000000000000dead' });
+  const result = compareBlock(first, [
+    { label: 'a', block: sequence[0] },
+    { label: 'b', block: sequence[0] },
+    { label: 'liar', block: fake },
+  ]);
+  assert.equal(kindOf(result), 'conflict');
+  assert.deepEqual(describe(result), [
+    `Block ${first}: providers DISAGREE`,
+    `  ${hashOf(sequence[0])}  a, b`,
+    `  ${fake.hash}  liar`,
+  ]);
+});
+
+test('edited fields under the real hash are listed apart from honest providers', () => {
+  const tampered = { ...sequence[0], gasUsed: '0x1' };
+  const result = compareBlock(first, [
+    { label: 'a', block: sequence[0] },
+    { label: 'b', block: tampered },
+  ]);
+  assert.equal(kindOf(result), 'conflict');
+  assert.deepEqual(describe(result), [
+    `Block ${first}: providers DISAGREE`,
+    `  ${hashOf(sequence[0])}  a`,
+    `  ${hashOf(sequence[0])}  b  (block fields do NOT hash to this)`,
+  ]);
+});
+
+test('missing blocks and errors alone are incomplete, not a conflict', () => {
+  const result = compareBlock(first, [
+    { label: 'a', block: sequence[0] },
+    { label: 'b', block: null },
+    { label: 'c', error: 'c: eth_getBlockByNumber returned HTTP 525' },
+  ]);
+  assert.equal(kindOf(result), 'incomplete');
+  assert.deepEqual(describe(result), [
+    `Block ${first}: not every provider returned this block`,
+    `  ${hashOf(sequence[0])}  a`,
+    '  no such block  b',
+    '  request failed  c: eth_getBlockByNumber returned HTTP 525',
+  ]);
+});
+
+test('agreement is its own kind', () => {
+  const result = compareBlock(first, [{ label: 'a', block: sequence[0] }, { label: 'b', block: sequence[0] }]);
+  assert.equal(kindOf(result), 'agree');
 });

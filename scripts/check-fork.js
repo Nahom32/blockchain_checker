@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { network } from 'hardhat';
 import { clientsFromEnv, labelFor, providerUrlsFromEnv } from '../src/rpc.js';
-import { compareRange, describe, finalizedBoundary, kindOf } from '../src/compare.js';
+import { compareRange, describe, getFinality, kindOf } from '../src/compare.js';
 
 // End-to-end check of provider comparison against a Hardhat mainnet fork.
 //
@@ -27,7 +27,7 @@ async function main() {
   const forkUrl = urls.at(-1);
 
   const head = await reference.getBlockNumber();
-  const mainnetFinalized = await finalizedBoundary([{ client: reference, head }]);
+  const { boundary: mainnetFinalized } = await getFinality([{ client: reference, head }]);
   const forkBlock = mainnetFinalized - FORK_DEPTH;
   console.log(`Forking ${labelFor(forkUrl)} at block ${forkBlock} (mainnet finalized: ${mainnetFinalized})`);
 

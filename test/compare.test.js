@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { compareBlock, compareRange, describe, fetchFromAll, finalizedBoundary, kindOf } from '../src/compare.js';
+import { compareBlock, compareRange, describe, fetchFromAll, getFinality, kindOf, providerWarnings } from '../src/compare.js';
 import { verifyHeaderHash } from '../src/header.js';
 
 // Five consecutive mainnet blocks (22431084..22431088), headers only.
@@ -150,12 +150,27 @@ function finalityClient(finalized) {
   };
 }
 
-test('the finalized boundary is the lowest finalized block across providers', async () => {
-  const boundary = await finalizedBoundary([
+test('a block is finalized if any provider says so: the boundary is the highest claim', async () => {
+  const { boundary, providers } = await getFinality([
     { client: finalityClient(1000n), head: 1070n },
     { client: finalityClient(990n), head: 1070n },
   ]);
-  assert.equal(boundary, 990n);
+  assert.equal(boundary, 1000n);
+  assert.deepEqual(providers.map((p) => [p.finalized, p.source]), [[1000n, 'tag'], [990n, 'tag']]);
+});
+
+test('a provider claiming finalized = 0 cannot lower the boundary', async () => {
+  const { boundary } = await getFinality([
+    { client: finalityClient(1000n), head: 1070n },
+    { client: finalityClient(0n), head: 1070n },
+  ]);
+  assert.equal(boundary, 1000n);
+});
+
+test('a finality claim above the provider\'s own head is capped at its head', async () => {
+  const { boundary, providers } = await getFinality([{ client: finalityClient(5000n), head: 1070n }]);
+  assert.equal(providers[0].finalized, 1070n);
+  assert.equal(boundary, 1070n);
 });
 
 test('providers without the finalized tag fall back to head minus confirmations', async () => {
@@ -163,9 +178,26 @@ test('providers without the finalized tag fall back to head minus confirmations'
     { client: finalityClient(new Error('f: eth_getBlockByNumber failed: unknown block tag')), head: 1000n },
     { client: finalityClient(null), head: 1010n },
   ];
-  assert.equal(await finalizedBoundary(providers), 1000n - 64n);
-  assert.equal(await finalizedBoundary(providers, 10n), 990n);
-  assert.equal(await finalizedBoundary([{ client: finalityClient(null), head: 5n }]), 0n);
+  const result = await getFinality(providers);
+  assert.equal(result.boundary, 1010n - 64n);
+  assert.deepEqual(result.providers.map((p) => p.source), ['confirmations', 'confirmations']);
+  assert.equal((await getFinality(providers, 10n)).boundary, 1000n);
+  assert.equal((await getFinality([{ client: finalityClient(null), head: 5n }])).boundary, 0n);
+});
+
+test('regression: a liar cannot excuse a deep forgery as a reorg by claiming low finality', async () => {
+  // The forged block sits ~1000 blocks below the head, long past finality.
+  // Before the fix, the liar's finalized = 0 became the boundary and the
+  // forgery was classified 'unfinalized' (exit 2) instead of 'conflict'.
+  const target = first + 2n;
+  const head = last + 1000n;
+  const fake = forged(sequence[2], { miner: '0x000000000000000000000000000000000000dead' });
+  const honest = { ...mockClient('honest'), request: finalityClient(head - 64n).request };
+  const liar = { ...mockClient('liar', { edit: { [target]: fake } }), request: finalityClient(0n).request };
+
+  const { boundary } = await getFinality([{ client: honest, head }, { client: liar, head }]);
+  const { disagreements } = await compareRange({ clients: [honest, liar], from: first, to: last });
+  assert.deepEqual(disagreements.map((d) => [d.number, kindOf(d, boundary)]), [[target, 'conflict']]);
 });
 
 test('different hashes above the finalized block are unfinalized, below are a conflict', () => {
@@ -186,4 +218,26 @@ test('a block whose fields do not match its hash is a conflict even above finali
     { label: 'b', block: { ...sequence[0], gasUsed: '0x1' } },
   ]);
   assert.equal(kindOf(result, first - 1n), 'conflict');
+});
+
+test('providers far behind on head or finality are warned about', async () => {
+  const labelled = (label, finalized) => ({ ...finalityClient(finalized), label });
+  const finality = await getFinality([
+    { client: labelled('good', 1000n), head: 1070n },
+    { client: labelled('lowball', 0n), head: 1070n },
+    { client: labelled('lagging', 800n), head: 870n },
+  ]);
+  assert.deepEqual(providerWarnings(finality), [
+    "lowball reports finalized 0, 1000 blocks behind the others (lagging, or misreporting finality); its claim is not used.",
+    "lagging's head is 200 blocks behind the highest; only blocks up to 870 can be compared.",
+    'lagging reports finalized 800, 200 blocks behind the others (lagging, or misreporting finality); its claim is not used.',
+  ]);
+});
+
+test('providers close together produce no warnings', async () => {
+  const finality = await getFinality([
+    { client: finalityClient(1000n), head: 1070n },
+    { client: finalityClient(968n), head: 1066n },
+  ]);
+  assert.deepEqual(providerWarnings(finality), []);
 });

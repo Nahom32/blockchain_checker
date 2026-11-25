@@ -171,11 +171,63 @@ test('local blocks have a valid (empty) withdrawals root', async () => {
 
 // Hardhat's genesis header commits to keccak256("") as its transactionsRoot
 // instead of the empty-trie root, which no transaction list can produce.
-// The checker rightly flags it.
+// The checker rightly flags it, so body checks below start at block 1.
 test('Hardhat\'s genesis transactions root is flagged (keccak256 of empty bytes, not the empty trie)', async () => {
   const genesis = await rpc('eth_getBlockByNumber', ['0x0', true]);
   assert.equal(genesis.transactionsRoot, '0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470');
   const problems = await checkBodyRoots(genesis, await fetchBlockReceipts(rpc, genesis));
   assert.equal(problems.length, 1);
   assert.match(problems[0], /^transactions root mismatch: .* contents hash to 0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421$/);
+});
+
+test('body checks: every local block\'s roots verify, in both modes', async () => {
+  const receiptsOf = new WeakMap();
+  const fetchFull = async (n) => {
+    const block = await rpc('eth_getBlockByNumber', [hex(n), true]);
+    receiptsOf.set(block, await fetchBlockReceipts(rpc, block));
+    return block;
+  };
+  const checkBody = (block) => checkBodyRoots(block, receiptsOf.get(block));
+  const head = BigInt((await blockAt('latest')).number);
+
+  const range = await verifyRange({ from: 1n, to: head, fetchBlock: fetchFull, checkBody });
+  assert.deepEqual(range.failed, []);
+
+  const top = await fetchFull(head);
+  const back = await verifyFromCheckpoint({
+    checkpointHash: top.hash, checkpointBlock: top, from: 1n, fetchBlock: fetchFull, checkBody,
+  });
+  assert.equal(back.brokenAt, null);
+  assert.deepEqual(back.failed, []);
+});
+
+test('a node lying about block contents is caught; in checkpoint mode the walk continues', async () => {
+  const head = BigInt((await blockAt('latest')).number);
+  // The highest block below the head that has transactions.
+  let target;
+  for (let n = head - 1n; n > 0n && target === undefined; n--) {
+    if ((await rpc('eth_getBlockByNumber', [hex(n), false])).transactions.length > 0) target = n;
+  }
+  assert.ok(target !== undefined);
+
+  const receiptsOf = new WeakMap();
+  const lyingFetch = async (n) => {
+    const block = await rpc('eth_getBlockByNumber', [hex(n), true]);
+    receiptsOf.set(block, await fetchBlockReceipts(rpc, block));
+    if (n === target) block.transactions[0].value = '0x123456'; // header untouched
+    return block;
+  };
+  const checkBody = (block) => checkBodyRoots(block, receiptsOf.get(block));
+
+  const range = await verifyRange({ from: 1n, to: head, fetchBlock: lyingFetch, checkBody });
+  assert.deepEqual(range.failed.map((r) => r.number), [target]);
+  assert.match(range.failed[0].problems[0], /^transactions root mismatch/);
+
+  const top = await lyingFetch(head);
+  const back = await verifyFromCheckpoint({
+    checkpointHash: top.hash, checkpointBlock: top, from: 1n, fetchBlock: lyingFetch, checkBody,
+  });
+  assert.equal(back.brokenAt, null, 'a body lie must not break the header chain of trust');
+  assert.equal(back.checked, Number(head), 'the walk must continue past the lying block');
+  assert.deepEqual(back.failed.map((r) => r.number), [target]);
 });

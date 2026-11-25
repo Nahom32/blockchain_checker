@@ -1,7 +1,9 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { clientsFromEnv, createClient, labelFor, labelsFor, providerUrlsFromEnv } from '../src/rpc.js';
+import {
+  backoffDelay, clientsFromEnv, createClient, DEFAULT_RETRY, labelFor, labelsFor, parseRetryAfter, providerUrlsFromEnv,
+} from '../src/rpc.js';
 
 test('WEB3_PROVIDER_URLS is split on commas, trimmed and deduplicated', () => {
   const env = { WEB3_PROVIDER_URLS: ' https://a.example/v1/KEY , https://b.example ,,https://a.example/v1/KEY' };
@@ -40,6 +42,8 @@ test('labels are numbered when providers share a host', () => {
 });
 
 // --- client against a fake JSON-RPC server ---------------------------------
+
+const noRetry = { retry: { retries: 0 } };
 
 let server;
 let baseUrl;
@@ -82,7 +86,7 @@ test('the client sends raw JSON-RPC requests and returns results', async () => {
 });
 
 test('RPC and HTTP errors name the provider by label only', async () => {
-  const client = createClient(`${baseUrl}/http-error?key=SECRET`, 'node-a');
+  const client = createClient(`${baseUrl}/http-error?key=SECRET`, 'node-a', noRetry);
   await assert.rejects(client.getBlockNumber(), /^Error: node-a: eth_blockNumber returned HTTP 503$/);
 
   const other = createClient(`${baseUrl}/rpc`, 'node-b');
@@ -90,10 +94,176 @@ test('RPC and HTTP errors name the provider by label only', async () => {
 });
 
 test('network failures do not leak the URL', async () => {
-  const client = createClient('http://127.0.0.1:1/SECRET', 'down');
+  const client = createClient('http://127.0.0.1:1/SECRET', 'down', noRetry);
   await assert.rejects(client.getBlockNumber(), (err) => {
     assert.match(err.message, /^down: eth_blockNumber request failed/);
     assert.doesNotMatch(err.message, /SECRET/);
     return true;
   });
+});
+
+// --- retries ----------------------------------------------------------------
+
+test('backoff grows exponentially with full jitter and is capped', () => {
+  const opts = { baseDelayMs: 100, maxDelayMs: 1000 };
+  assert.equal(backoffDelay(0, opts, () => 1), 100);
+  assert.equal(backoffDelay(3, opts, () => 1), 800);
+  assert.equal(backoffDelay(10, opts, () => 1), 1000);
+  assert.equal(backoffDelay(3, opts, () => 0), 0);
+  assert.equal(backoffDelay(3, opts, () => 0.5), 400);
+});
+
+test('Retry-After is read as seconds or an HTTP date', () => {
+  assert.equal(parseRetryAfter('2'), 2000);
+  assert.equal(parseRetryAfter('0.5'), 500);
+  const now = Date.parse('2026-01-01T00:00:00Z');
+  assert.equal(parseRetryAfter('Thu, 01 Jan 2026 00:00:03 GMT', now), 3000);
+  assert.equal(parseRetryAfter('Wed, 31 Dec 2025 23:59:00 GMT', now), 0); // in the past
+  assert.equal(parseRetryAfter('soon'), undefined);
+  assert.equal(parseRetryAfter(null), undefined);
+});
+
+/** A server that answers each request with the next scripted response. */
+async function scriptedServer(script) {
+  const seen = [];
+  const srv = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      const { id, method } = JSON.parse(body);
+      seen.push(method);
+      const step = script[Math.min(seen.length - 1, script.length - 1)];
+      const payload = step.error ? { error: step.error } : { result: step.result ?? '0x1' };
+      res.writeHead(step.status ?? 200, { 'content-type': 'application/json', ...step.headers });
+      res.end(step.status && step.status !== 200 ? '' : JSON.stringify({ jsonrpc: '2.0', id, ...payload }));
+    });
+  });
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  return { url: `http://127.0.0.1:${srv.address().port}`, seen, close: () => srv.close() };
+}
+
+function retryingClient(url, extra = {}) {
+  const sleeps = [];
+  const retries = [];
+  const client = createClient(url, 'node', {
+    retry: { retries: 3, baseDelayMs: 100, maxDelayMs: 1000, ...extra },
+    sleep: async (ms) => sleeps.push(ms),
+    onRetry: (info) => retries.push(info),
+  });
+  return { client, sleeps, retries };
+}
+
+test('HTTP 429 is retried with backoff until it succeeds', async () => {
+  const server = await scriptedServer([{ status: 429 }, { status: 429 }, { result: '0x2a' }]);
+  try {
+    const { client, sleeps, retries } = retryingClient(server.url);
+    assert.equal(await client.getBlockNumber(), 42n);
+    assert.equal(server.seen.length, 3);
+    assert.equal(sleeps.length, 2);
+    assert.ok(sleeps[0] <= 100 && sleeps[1] <= 200, `delays ${sleeps}`);
+    assert.deepEqual(retries.map((r) => [r.attempt, r.method]), [[1, 'eth_blockNumber'], [2, 'eth_blockNumber']]);
+    assert.match(retries[0].reason, /HTTP 429/);
+  } finally {
+    server.close();
+  }
+});
+
+test('Retry-After is honored, but capped at maxDelayMs', async () => {
+  const server = await scriptedServer([
+    { status: 429, headers: { 'retry-after': '0.3' } },
+    { status: 429, headers: { 'retry-after': '120' } },
+    { result: '0x1' },
+  ]);
+  try {
+    const { client, sleeps } = retryingClient(server.url);
+    await client.getBlockNumber();
+    assert.deepEqual(sleeps, [300, 1000]);
+  } finally {
+    server.close();
+  }
+});
+
+test('JSON-RPC rate-limit errors are retried', async () => {
+  const server = await scriptedServer([
+    { error: { code: -32005, message: 'limit exceeded' } },
+    { error: { code: -32000, message: 'Too Many Requests, slow down' } },
+    { result: '0x1' },
+  ]);
+  try {
+    const { client } = retryingClient(server.url);
+    assert.equal(await client.getBlockNumber(), 1n);
+    assert.equal(server.seen.length, 3);
+  } finally {
+    server.close();
+  }
+});
+
+test('gateway errors are retried for reads but never for writes', async () => {
+  const server = await scriptedServer([{ status: 503 }, { result: '0x1' }]);
+  try {
+    const { client } = retryingClient(server.url);
+    assert.equal(await client.getBlockNumber(), 1n);
+    assert.deepEqual(server.seen, ['eth_blockNumber', 'eth_blockNumber']);
+  } finally {
+    server.close();
+  }
+
+  const writeServer = await scriptedServer([{ status: 503 }, { result: '0xhash' }]);
+  try {
+    const { client } = retryingClient(writeServer.url);
+    await assert.rejects(client.request('eth_sendRawTransaction', ['0x00']), /^Error: node: eth_sendRawTransaction returned HTTP 503$/);
+    assert.equal(writeServer.seen.length, 1, 'a write must not be sent twice');
+  } finally {
+    writeServer.close();
+  }
+});
+
+test('a rate-limited write is retried (429 means it was refused, not applied)', async () => {
+  const server = await scriptedServer([{ status: 429 }, { result: '0xhash' }]);
+  try {
+    const { client } = retryingClient(server.url);
+    assert.equal(await client.request('eth_sendRawTransaction', ['0x00']), '0xhash');
+  } finally {
+    server.close();
+  }
+});
+
+test('other errors are not retried', async () => {
+  for (const step of [{ status: 400 }, { status: 500 }, { error: { code: -32601, message: 'method not found' } }]) {
+    const server = await scriptedServer([step, { result: '0x1' }]);
+    try {
+      const { client, sleeps } = retryingClient(server.url);
+      await assert.rejects(client.getBlockNumber());
+      assert.equal(server.seen.length, 1, `${JSON.stringify(step)} was retried`);
+      assert.deepEqual(sleeps, []);
+    } finally {
+      server.close();
+    }
+  }
+});
+
+test('it gives up after the configured retries and says so', async () => {
+  const server = await scriptedServer([{ status: 429 }]);
+  try {
+    const { client, sleeps } = retryingClient(server.url, { retries: 2 });
+    await assert.rejects(client.getBlockNumber(), /^Error: node: eth_blockNumber returned HTTP 429 \(gave up after 2 retries\)$/);
+    assert.equal(server.seen.length, 3);
+    assert.equal(sleeps.length, 2);
+  } finally {
+    server.close();
+  }
+});
+
+test('network failures are retried for reads only', async () => {
+  const { client, retries } = retryingClient('http://127.0.0.1:1/', { retries: 2 });
+  await assert.rejects(client.getBlockNumber(), /request failed .*\(gave up after 2 retries\)$/);
+  assert.equal(retries.length, 2);
+
+  const writer = retryingClient('http://127.0.0.1:1/', { retries: 2 });
+  await assert.rejects(writer.client.request('eth_sendRawTransaction', ['0x00']), /request failed \([^)]*\)$/);
+  assert.equal(writer.retries.length, 0);
+});
+
+test('the default retry settings are bounded', () => {
+  assert.deepEqual(DEFAULT_RETRY, { retries: 5, baseDelayMs: 250, maxDelayMs: 8000 });
 });

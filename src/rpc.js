@@ -50,7 +50,11 @@ export function labelsFor(urls) {
 }
 
 export const DEFAULT_RETRY = {
-  retries: 8, // attempts after the first
+  retries: 8, // retries for gateway and network errors
+  // Rate limits are retried for up to this long per request instead of a
+  // fixed count: free tiers (e.g. drpc's) reject everything for 40-60s once
+  // a quota window is used up, which a retry count can't express.
+  rateLimitBudgetMs: 120_000,
   baseDelayMs: 500,
   maxDelayMs: 15_000, // cap for one wait, including a server's Retry-After
 };
@@ -179,8 +183,11 @@ export function createClient(url, label = labelFor(url), options = {}) {
   // until this time before its next attempt. Without it, concurrent requests
   // back off independently and keep the limit tripped.
   let pausedUntil = 0;
+  /** Wait until the client is no longer paused; returns how long that took. */
   async function waitOutPause() {
+    const start = now();
     for (let wait = pausedUntil - now(); wait > 0; wait = pausedUntil - now()) await sleep(wait);
+    return now() - start;
   }
 
   async function attempt(method, params) {
@@ -228,13 +235,16 @@ export function createClient(url, label = labelFor(url), options = {}) {
 
   /**
    * Send one JSON-RPC request. Rate-limit responses are retried with
-   * exponential backoff (honoring Retry-After); gateway errors and network
-   * failures are retried only for read-only methods, since a write may
-   * already have been applied.
+   * exponential backoff (honoring Retry-After) for up to rateLimitBudgetMs of
+   * waiting; gateway errors and network failures are retried up to `retries`
+   * times, and only for read-only methods, since a write may already have
+   * been applied.
    */
   async function request(method, params = []) {
+    let rateLimitedMs = 0; // time this request has spent waiting out rate limits
+    let failures = 0; // gateway/network retries so far
     for (let n = 0; ; n++) {
-      await waitOutPause();
+      rateLimitedMs += await waitOutPause();
       // Hold a slot only while the request is on the wire, not while waiting.
       const ticket = await limiter.acquire();
       try {
@@ -242,12 +252,20 @@ export function createClient(url, label = labelFor(url), options = {}) {
         limiter.release(ticket, 'success');
         return result;
       } catch (err) {
-        limiter.release(ticket, err.retry === 'always' ? 'rate-limited' : 'other');
-        const retryable = err.retry === 'always' || (err.retry === 'read-only' && READ_ONLY.test(method));
-        if (!retryable || n >= retry.retries) {
-          const suffix = retryable && n > 0 ? ` (gave up after ${n} ${n === 1 ? 'retry' : 'retries'})` : '';
+        const rateLimited = err.retry === 'always';
+        limiter.release(ticket, rateLimited ? 'rate-limited' : 'other');
+        const retryable = rateLimited || (err.retry === 'read-only' && READ_ONLY.test(method));
+        const exhausted = rateLimited ? rateLimitedMs >= retry.rateLimitBudgetMs : failures >= retry.retries;
+        if (!retryable || exhausted) {
+          let suffix = '';
+          if (retryable && n > 0) {
+            suffix = ` (gave up after ${n} ${n === 1 ? 'retry' : 'retries'}`;
+            if (rateLimited) suffix += ` and ${Math.round(rateLimitedMs / 1000)}s of rate limiting`;
+            suffix += ')';
+          }
           throw new Error(`${err.message}${suffix}`);
         }
+        if (!rateLimited) failures++;
         const delayMs = Math.min(retry.maxDelayMs, err.retryAfterMs ?? backoffDelay(n, retry));
         options.onRetry?.({
           label, method, attempt: n + 1, delayMs, reason: err.message, concurrency: limiter.stats().limit,
@@ -255,7 +273,7 @@ export function createClient(url, label = labelFor(url), options = {}) {
         if (err.retry === 'always') {
           // Rate limited: pause the whole client, not just this request.
           pausedUntil = Math.max(pausedUntil, now() + delayMs);
-          await waitOutPause();
+          rateLimitedMs += await waitOutPause();
         } else {
           await sleep(delayMs);
         }

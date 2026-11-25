@@ -249,11 +249,41 @@ test('other errors are not retried', async () => {
   }
 });
 
-test('it gives up after the configured retries and says so', async () => {
+test('rate limits are retried for a time budget, not a retry count', async () => {
+  // drpc's free tier rejects everything for 40-60s once its quota window is
+  // used up; a fixed count of short waits gave up before that ended.
   const server = await scriptedServer([{ status: 429 }]);
   try {
+    const { client, sleeps } = retryingClient(server.url, { retries: 2, rateLimitBudgetMs: 5000, maxDelayMs: 1000 });
+    await assert.rejects(
+      client.getBlockNumber(),
+      /^Error: node: eth_blockNumber returned HTTP 429 \(gave up after \d+ retries and [56]s of rate limiting\)$/,
+    );
+    const waited = sleeps.reduce((a, b) => a + b, 0);
+    assert.ok(waited >= 5000 && waited < 6000, `waited ${waited}ms`);
+    assert.ok(server.seen.length > 3, 'the retry count must not cap rate-limit retries');
+  } finally {
+    server.close();
+  }
+});
+
+test('a provider that recovers within the budget succeeds', async () => {
+  // 20 rejections in a row (a long penalty window), then it recovers.
+  const server = await scriptedServer([...Array(20).fill({ status: 429 }), { result: '0x7' }]);
+  try {
+    const { client } = retryingClient(server.url, { retries: 2, rateLimitBudgetMs: 60_000 });
+    assert.equal(await client.getBlockNumber(), 7n);
+    assert.equal(server.seen.length, 21);
+  } finally {
+    server.close();
+  }
+});
+
+test('gateway errors give up after the retry count and say so', async () => {
+  const server = await scriptedServer([{ status: 503 }]);
+  try {
     const { client, sleeps } = retryingClient(server.url, { retries: 2 });
-    await assert.rejects(client.getBlockNumber(), /^Error: node: eth_blockNumber returned HTTP 429 \(gave up after 2 retries\)$/);
+    await assert.rejects(client.getBlockNumber(), /^Error: node: eth_blockNumber returned HTTP 503 \(gave up after 2 retries\)$/);
     assert.equal(server.seen.length, 3);
     assert.equal(sleeps.length, 2);
   } finally {
@@ -321,7 +351,7 @@ test('network errors are classified as transient or permanent', () => {
 });
 
 test('the default retry settings are bounded', () => {
-  assert.deepEqual(DEFAULT_RETRY, { retries: 8, baseDelayMs: 500, maxDelayMs: 15000 });
+  assert.deepEqual(DEFAULT_RETRY, { retries: 8, rateLimitBudgetMs: 120000, baseDelayMs: 500, maxDelayMs: 15000 });
 });
 
 test('a rate limit pauses every request to that provider, not just the one that hit it', async () => {

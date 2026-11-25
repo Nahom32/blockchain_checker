@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node integrity_checker.js",
     "tamper": "node tamper_checker.js",
+    "node": "hardhat node",
     "test": "node --test"
   },
   "author": "NSG",

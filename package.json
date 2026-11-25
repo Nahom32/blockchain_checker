@@ -9,6 +9,7 @@
     "tamper": "node tamper_checker.js",
     "node": "hardhat node",
     "check:local": "node scripts/check-local-node.js",
+    "check:fork": "node scripts/check-fork.js",
     "test": "node --test"
   },
   "author": "NSG",

@@ -48,11 +48,18 @@ test('verify --help prints its options', async () => {
   assert.match(stdout, /--full/);
 });
 
-test('verify checks a range on the node', async () => {
+test('verify checks a range on the node, quietly by default', async () => {
   const { code, stdout } = await cli(['verify', '--from', '0']);
   assert.equal(code, 0);
   assert.match(stdout, /Checking blocks 0 to 5\./);
   assert.match(stdout, /Checked 6 blocks: 6 valid, 0 failed\./);
+  assert.doesNotMatch(stdout, /is valid/);
+});
+
+test('verify --verbose lists every valid block', async () => {
+  const { code, stdout } = await cli(['verify', '--from', '0', '--verbose']);
+  assert.equal(code, 0);
+  for (let n = 0; n <= 5; n++) assert.match(stdout, new RegExp(`Block ${n} is valid\\.`));
 });
 
 test('verify --full checks body roots (and flags Hardhat\'s genesis quirk)', async () => {
@@ -115,6 +122,11 @@ test('compare: two honest providers agree', async () => {
     assert.equal(code, 0);
     assert.match(stdout, /Comparing blocks 0 to 5 across 2 providers/);
     assert.match(stdout, /Checked 6 blocks: 6 agree, 0 disagree/);
+    assert.doesNotMatch(stdout, /all agree on/);
+
+    const verbose = await cli(['compare', '--from', '0', '--verbose'], { WEB3_PROVIDER_URLS: `${chain.url},${mirror.url}` });
+    assert.match(verbose.stdout, /Block 0: all agree on 0x[0-9a-f]{64}\n/);
+    assert.equal(verbose.stdout.match(/all agree on/g).length, 6);
   } finally {
     await mirror.close();
   }
@@ -182,15 +194,19 @@ test('check-local sends transactions, mines them and verifies every block', asyn
   try {
     const { code, stdout } = await cli(['check-local'], { WEB3_PROVIDER_URL: own.url });
     assert.equal(code, 0);
-    assert.match(stdout, /block 1 \[prague, 1 txs\]: valid/);
+    assert.doesNotMatch(stdout, /: valid/);
     assert.match(stdout, /All 5 blocks verified\./);
+
+    const verbose = await cli(['check-local', '--verbose'], { WEB3_PROVIDER_URL: own.url });
+    assert.equal(verbose.code, 0);
+    assert.match(verbose.stdout, /block 1 \[prague, 1 txs\]: valid/);
   } finally {
     await own.close();
   }
 });
 
-test('check-local takes no arguments', async () => {
+test('check-local only takes --verbose', async () => {
   const { code, stderr } = await cli(['check-local', '--last', '3']);
   assert.equal(code, 1);
-  assert.match(stderr, /check-local takes no arguments/);
+  assert.match(stderr, /Unknown option '--last'/);
 });

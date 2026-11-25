@@ -10,6 +10,7 @@ const OPTIONS = {
   concurrency: { type: 'string' },
   confirmations: { type: 'string' },
   full: { type: 'boolean' },
+  verbose: { type: 'boolean' },
 };
 
 export const ALL_OPTIONS = Object.keys(OPTIONS);
@@ -22,7 +23,8 @@ function toBlockNumber(name, value) {
 /**
  * Parse command-line options. --from, --to and --last become bigints,
  * --checkpoint a lowercase block hash, --concurrency a number,
- * --confirmations a bigint and --full true. Absent options are undefined.
+ * --confirmations a bigint, and --full and --verbose true. Absent options
+ * are undefined.
  *
  * @param {string[]} argv
  * @param {string[]} [allowed] the options this command accepts; any other
@@ -49,6 +51,7 @@ export function parseOptions(argv, allowed = ALL_OPTIONS) {
   }
   if (values.confirmations !== undefined) parsed.confirmations = toBlockNumber('confirmations', values.confirmations);
   if (values.full) parsed.full = true;
+  if (values.verbose) parsed.verbose = true;
   return parsed;
 }
 

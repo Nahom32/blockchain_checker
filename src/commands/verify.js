@@ -21,9 +21,10 @@ Range (default: the last 100 blocks):
                          itself needn't be trusted; combine with --last/--from
   --full                 also check each block's transactions, receipts and
                          withdrawals roots (slower: fetches full blocks)
-  --concurrency N        block requests in flight (default 10)`;
+  --concurrency N        block requests in flight (default 10)
+  --verbose              also list every valid block, not just problems`;
 
-const OPTIONS = ['from', 'to', 'last', 'checkpoint', 'concurrency', 'full'];
+const OPTIONS = ['from', 'to', 'last', 'checkpoint', 'concurrency', 'full', 'verbose'];
 
 /**
  * Block fetching for the chosen mode. With --full, each fetch also gets the
@@ -100,9 +101,10 @@ async function checkFromCheckpoint(client, args, print) {
 /** @param {string[]} argv @param {import('../output.js').IO} io @returns {Promise<number>} exit code */
 export async function run(argv, io) {
   const print = printer(io);
+  let verbose = false;
   print.block = ({ number, problems }) => {
     if (problems.length === 0) {
-      print.log(`Block ${number} is valid.`);
+      if (verbose) print.log(`Block ${number} is valid.`);
     } else {
       print.error(`Block ${number} FAILED:`);
       for (const problem of problems) print.error(`  - ${problem}`);
@@ -111,6 +113,7 @@ export async function run(argv, io) {
 
   try {
     const args = parseOptions(argv, OPTIONS);
+    verbose = Boolean(args.verbose);
     const client = createClient(io.env.WEB3_PROVIDER_URL || DEFAULT_URL);
     const ok = args.checkpoint ? await checkFromCheckpoint(client, args, print) : await checkRange(client, args, print);
     return ok ? 0 : 1;

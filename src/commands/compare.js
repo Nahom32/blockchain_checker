@@ -19,6 +19,7 @@ Range (default: the last 100 blocks every reachable provider has):
   --confirmations N      for providers without a 'finalized' tag, treat blocks
                          this far below the head as final (default 64)
   --concurrency N        block numbers in flight (default 10)
+  --verbose              also list every block the providers agree on
 
 Disagreements above the finalized block are reported as likely reorgs. A
 block counts as finalized if ANY provider says so, so one provider can't
@@ -27,7 +28,7 @@ excuse its forgeries by claiming low finality.
 Exit code: 0 all agree, 1 providers disagree on a finalized block,
 2 only unfinalized disagreements or incomplete results.`;
 
-const OPTIONS = ['from', 'to', 'last', 'concurrency', 'confirmations'];
+const OPTIONS = ['from', 'to', 'last', 'concurrency', 'confirmations', 'verbose'];
 
 async function reachable(clients, print) {
   const heads = await Promise.all(
@@ -71,6 +72,7 @@ export async function run(argv, io) {
       clients, from, to, concurrency: args.concurrency,
       onBlock: (result) => {
         if (!result.agreed) print.log(`\n${describe(result, finalized).join('\n')}`);
+        else if (args.verbose) print.log(`Block ${result.number}: all agree on ${result.responses[0].hash}`);
       },
     });
 

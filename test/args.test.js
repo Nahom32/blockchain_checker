@@ -57,8 +57,8 @@ test('--confirmations is parsed', () => {
   assert.throws(() => parseOptions(['--confirmations', 'x']), /non-negative integer/);
 });
 
-test('--full is parsed', () => {
-  assert.deepEqual(parseOptions(['--full']), { full: true });
+test('--full and --verbose are parsed', () => {
+  assert.deepEqual(parseOptions(['--full', '--verbose']), { full: true, verbose: true });
   assert.deepEqual(parseOptions([]), {});
 });
 

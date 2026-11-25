@@ -1,8 +1,4 @@
-import 'dotenv/config';
-import Web3 from 'web3';
-
-// Connect to Ganache
-const web3 = new Web3(process.env.WEB3_PROVIDER_URL || 'http://localhost:8545');
+import { web3 } from './src/provider.js';
 
 async function simulateTampering() {
   try {

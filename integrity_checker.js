@@ -1,60 +1,31 @@
 import { web3, getRawBlock } from './src/provider.js';
+import { verifyRange } from './src/chain.js';
 
-async function verifyBlockchainIntegrity() {
-  try {
-    const latestBlockNumber = await web3.eth.getBlockNumber();
-    console.log(`Latest Block Number: ${latestBlockNumber}`);
+// Verify every block's header hash and its link to the previous block.
 
-    let previousBlockHash = null;
-    for (let i = 0; i <= latestBlockNumber; i++) {
-      const block = await getRawBlock(i);
+async function main() {
+  const latest = await web3.eth.getBlockNumber();
+  console.log(`Latest block number: ${latest}`);
 
-      
-      if (i === 0) {
-        if (block.parentHash === '0x0000000000000000000000000000000000000000000000000000000000000000') {
-          console.log(`Genesis Block ${i} is valid:`);
-          console.log(`Hash: ${block.hash}`);
-          console.log(`-------------------`);
-          previousBlockHash = block.hash; // Genesis block has no parentHash
-        } else {
-          console.error(`Genesis Block ${i} has an incorrect parent hash!`);
-          return;
-        }
-        continue;
+  const { checked, failed } = await verifyRange({
+    from: 0n,
+    to: latest,
+    fetchBlock: getRawBlock,
+    onBlock: ({ number, problems }) => {
+      if (problems.length === 0) {
+        console.log(`Block ${number} is valid.`);
+      } else {
+        console.error(`Block ${number} FAILED:`);
+        for (const problem of problems) console.error(`  - ${problem}`);
       }
+    },
+  });
 
-      
-      if (previousBlockHash && block.parentHash !== previousBlockHash) {
-        console.error(`Block ${i} has been tampered with!`);
-        console.error(`Expected parent hash: ${previousBlockHash}`);
-        console.error(`Actual parent hash: ${block.parentHash}`);
-        return;
-      }
-
-      console.log(`Block ${i} is valid.`);
-      previousBlockHash = block.hash;
-    }
-  } catch (error) {
-    console.error('Error verifying blockchain integrity:', error);
-  }
+  console.log(`\nChecked ${checked} blocks: ${checked - failed.length} valid, ${failed.length} failed.`);
+  if (failed.length > 0) process.exitCode = 1;
 }
 
-async function getBlockHashes() {
-  try {
-    const latestBlockNumber = await web3.eth.getBlockNumber();
-    console.log(`Latest Block Number: ${latestBlockNumber}`);
-
-    for (let i = 0; i <= latestBlockNumber; i++) {
-      const block = await getRawBlock(i);
-      console.log(`Block ${i}:`);
-      console.log(`Hash: ${block.hash}`);
-      console.log(`Parent Hash: ${block.parentHash}`);
-      console.log(`-------------------`);
-    }
-    await verifyBlockchainIntegrity();
-  } catch (error) {
-    console.error('Error fetching block information:', error);
-  }
-}
-
-getBlockHashes();
+main().catch((error) => {
+  console.error('Error verifying blockchain integrity:', error.message ?? error);
+  process.exitCode = 1;
+});

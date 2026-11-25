@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "This is a blockchain checker",
   "type": "module",
+  "bin": {
+    "blockchain-checker": "src/cli.js"
+  },
   "scripts": {
     "start": "node src/cli.js verify",
     "compare": "node src/cli.js compare",

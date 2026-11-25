@@ -1,5 +1,7 @@
+#!/usr/bin/env node
 import 'dotenv/config';
-import { pathToFileURL } from 'node:url';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { printer, processIO } from './output.js';
 import { EXIT, EXIT_CODES_HELP } from './exit.js';
 import * as checkLocal from './commands/check-local.js';
@@ -51,6 +53,19 @@ export async function main(argv, io = processIO()) {
   return command.run(rest, io);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/**
+ * True when this file is the program being run. Compares real paths, because
+ * an installed bin is a symlink: process.argv[1] is the link, not this file.
+ */
+function isEntryPoint() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
   process.exitCode = await main(process.argv.slice(2));
 }

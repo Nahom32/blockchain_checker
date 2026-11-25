@@ -293,9 +293,9 @@ export function createClient(url, label = labelFor(url), options = {}) {
   };
 }
 
-/** One client per configured provider URL. */
-export function clientsFromEnv(env = process.env) {
+/** One client per configured provider URL; `options` go to each createClient. */
+export function clientsFromEnv(env = process.env, options = {}) {
   const urls = providerUrlsFromEnv(env);
   const labels = labelsFor(urls);
-  return urls.map((url, i) => createClient(url, labels[i]));
+  return urls.map((url, i) => createClient(url, labels[i], options));
 }

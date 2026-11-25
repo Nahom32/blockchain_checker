@@ -2,6 +2,7 @@ import { clientsFromEnv } from '../rpc.js';
 import { compareRange, describe, getFinality, kindOf, providerWarnings } from '../compare.js';
 import { parseOptions, resolveRange } from '../args.js';
 import { printer } from '../output.js';
+import { detailsLine, retryCounter } from '../summary.js';
 
 export const summary = 'compare blocks across several providers';
 
@@ -49,7 +50,9 @@ export async function run(argv, io) {
   const print = printer(io);
   try {
     const args = parseOptions(argv, OPTIONS);
-    const up = await reachable(clientsFromEnv(io.env), print);
+    const started = Date.now();
+    const retries = retryCounter();
+    const up = await reachable(clientsFromEnv(io.env, { onRetry: retries.onRetry }), print);
     if (up.length < 2) {
       print.error(`Need at least 2 reachable providers to compare, have ${up.length}. Set WEB3_PROVIDER_URLS.`);
       return 1;
@@ -84,6 +87,7 @@ export async function run(argv, io) {
       `\nChecked ${checked} blocks: ${checked - disagreements.length} agree, ${conflicts} disagree, ` +
         `${unfinalized} disagree before finality, ${incomplete} incomplete.`,
     );
+    print.log(detailsLine({ from, to, elapsedMs: Date.now() - started, retries }));
     return conflicts > 0 ? 1 : unfinalized + incomplete > 0 ? 2 : 0;
   } catch (error) {
     print.error(`Error comparing providers: ${error.message ?? error}`);

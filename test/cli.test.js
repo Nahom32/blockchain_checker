@@ -52,7 +52,7 @@ test('verify checks a range on the node, quietly by default', async () => {
   const { code, stdout } = await cli(['verify', '--from', '0']);
   assert.equal(code, 0);
   assert.match(stdout, /Checking blocks 0 to 5\./);
-  assert.match(stdout, /Checked 6 blocks: 6 valid, 0 failed\./);
+  assert.match(stdout, /Checked 6 blocks: 6 valid, 0 failed\.\n {2}Blocks 0 to 5 in \d+\.\ds\.\n$/);
   assert.doesNotMatch(stdout, /is valid/);
 });
 
@@ -70,6 +70,7 @@ test('verify --full checks body roots (and flags Hardhat\'s genesis quirk)', asy
   const fromGenesis = await cli(['verify', '--full', '--from', '0']);
   assert.equal(fromGenesis.code, 1);
   assert.match(fromGenesis.stderr, /Block 0 FAILED:\n {2}- transactions root mismatch/);
+  assert.match(fromGenesis.stdout, /Checked 6 blocks: 5 valid, 1 failed\.\n {2}Failures: 1 contents mismatch\./);
 });
 
 test('verify --checkpoint verifies back from a trusted hash', async () => {
@@ -138,7 +139,7 @@ test('compare: a provider serving a forged block is reported, exit 1', async () 
     const { code, stdout } = await cli(['compare', '--from', '0'], { WEB3_PROVIDER_URLS: `${chain.url},${liar.url}` });
     assert.equal(code, 1);
     assert.match(stdout, /Block 3: providers DISAGREE\n {2}0x[0-9a-f]{64} {2}127\.0\.0\.1:\d+\n {2}0x[0-9a-f]{64} {2}127\.0\.0\.1:\d+/);
-    assert.match(stdout, /Checked 6 blocks: 5 agree, 1 disagree/);
+    assert.match(stdout, /Checked 6 blocks: 5 agree, 1 disagree.*\n {2}Blocks 0 to 5 in \d+\.\ds\./);
   } finally {
     await liar.close();
   }

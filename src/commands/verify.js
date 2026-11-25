@@ -3,6 +3,7 @@ import { verifyFromCheckpoint, verifyRange } from '../chain.js';
 import { checkBodyRoots, fetchBlockReceipts } from '../body.js';
 import { parseOptions, resolveRange } from '../args.js';
 import { printer } from '../output.js';
+import { detailsLine, failureBreakdown, retryCounter } from '../summary.js';
 
 export const summary = "check blocks' hashes and links on one node";
 
@@ -51,7 +52,13 @@ function fetching(client, args) {
   };
 }
 
-async function checkRange(client, args, print) {
+/** Lines under the one-line summary: failures by kind, range, time, retries. */
+function printDetails(print, { failed, from, to, started, retries }) {
+  if (failed.length > 0) print.log(`  Failures: ${failureBreakdown(failed)}.`);
+  print.log(detailsLine({ from, to, elapsedMs: Date.now() - started, retries }));
+}
+
+async function checkRange(client, args, print, run) {
   const latest = await client.getBlockNumber();
   const { from, to } = resolveRange(args, latest);
   print.log(`Latest block number: ${latest}. Checking blocks ${from} to ${to}.`);
@@ -62,10 +69,11 @@ async function checkRange(client, args, print) {
   });
 
   print.log(`\nChecked ${checked} blocks: ${checked - failed.length} valid, ${failed.length} failed.`);
+  printDetails(print, { failed, from, to, ...run });
   return failed.length === 0;
 }
 
-async function checkFromCheckpoint(client, args, print) {
+async function checkFromCheckpoint(client, args, print, run) {
   const { fetchBlock, fetchByHash, checkBody } = fetching(client, args);
   const checkpointBlock = await fetchByHash(args.checkpoint);
   if (!checkpointBlock) {
@@ -88,14 +96,13 @@ async function checkFromCheckpoint(client, args, print) {
 
   if (brokenAt !== null) {
     print.error(`\nChain of trust broken at block ${brokenAt}; blocks ${from} to ${brokenAt} are not verified.`);
+    printDetails(print, { failed, from: brokenAt, to, ...run });
     return false;
   }
   print.log(`\nAll ${checked} blocks (${from} to ${to}) are tied to the checkpoint.`);
-  if (failed.length > 0) {
-    print.error(`${failed.length} of them have contents that don't match their header.`);
-    return false;
-  }
-  return true;
+  if (failed.length > 0) print.error(`${failed.length} of them have contents that don't match their header.`);
+  printDetails(print, { failed, from, to, ...run });
+  return failed.length === 0;
 }
 
 /** @param {string[]} argv @param {import('../output.js').IO} io @returns {Promise<number>} exit code */
@@ -114,8 +121,11 @@ export async function run(argv, io) {
   try {
     const args = parseOptions(argv, OPTIONS);
     verbose = Boolean(args.verbose);
-    const client = createClient(io.env.WEB3_PROVIDER_URL || DEFAULT_URL);
-    const ok = args.checkpoint ? await checkFromCheckpoint(client, args, print) : await checkRange(client, args, print);
+    const run = { started: Date.now(), retries: retryCounter() };
+    const client = createClient(io.env.WEB3_PROVIDER_URL || DEFAULT_URL, undefined, { onRetry: run.retries.onRetry });
+    const ok = args.checkpoint
+      ? await checkFromCheckpoint(client, args, print, run)
+      : await checkRange(client, args, print, run);
     return ok ? 0 : 1;
   } catch (error) {
     print.error(`Error verifying blockchain integrity: ${error.message ?? error}`);

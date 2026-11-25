@@ -2,7 +2,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { network } from 'hardhat';
 import { verifyFromCheckpoint, verifyRange } from '../src/chain.js';
-import { verifyTransactionsRoot } from '../src/body.js';
+import { fetchBlockReceipts, verifyReceiptsRoot, verifyTransactionsRoot } from '../src/body.js';
 
 // Range and checkpoint verification against a real local chain. Hardhat runs
 // the chain in this process, so no separate node is needed.
@@ -130,4 +130,30 @@ test('a local block with several transaction types has a valid transactions root
   const tampered = structuredClone(block);
   tampered.transactions[1].value = '0x99';
   assert.equal((await verifyTransactionsRoot(tampered)).valid, false);
+});
+
+test('a local block with a log and a failed transaction has a valid receipts root', async () => {
+  const [from] = await rpc('eth_accounts');
+  await rpc('evm_setAutomine', [false]);
+  try {
+    // Contract creation running PUSH1 0, PUSH1 0, LOG0: succeeds, emits one log.
+    await rpc('eth_sendTransaction', [{ from, data: '0x60006000a0', gas: '0x186a0' }]);
+    // Contract creation running INVALID: always fails (status 0).
+    await rpc('eth_sendTransaction', [{ from, data: '0xfe', gas: '0x186a0' }]);
+    await rpc('evm_mine');
+  } finally {
+    await rpc('evm_setAutomine', [true]);
+  }
+
+  const block = await rpc('eth_getBlockByNumber', ['latest', false]);
+  const receipts = await fetchBlockReceipts(rpc, block);
+  assert.deepEqual(receipts.map((r) => [r.status, r.logs.length]), [['0x1', 1], ['0x0', 0]]);
+
+  const result = await verifyReceiptsRoot(block, receipts);
+  assert.equal(result.error, undefined);
+  assert.equal(result.valid, true);
+
+  const tampered = structuredClone(receipts);
+  tampered[1].status = '0x1';
+  assert.equal((await verifyReceiptsRoot(block, tampered)).valid, false);
 });

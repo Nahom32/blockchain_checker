@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { verifyTransactionsRoot } from '../src/body.js';
+import { RLP } from '@ethereumjs/rlp';
+import { encodeReceipt, fetchBlockReceipts, verifyReceiptsRoot, verifyTransactionsRoot } from '../src/body.js';
 
 const load = (name) => JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8'));
 
@@ -94,4 +95,82 @@ test('a malformed transaction gives valid: false with an error instead of throwi
   assert.equal(result.valid, false);
   assert.equal(result.expected, null);
   assert.ok(result.error);
+});
+
+// --- receipts ---------------------------------------------------------------
+
+
+const receipts = load('mainnet-receipts.json');
+
+for (const [name, blk] of Object.entries(full)) {
+  test(`untampered ${name} block ${parseInt(blk.number)} has a valid receipts root`, async () => {
+    const result = await verifyReceiptsRoot(blk, receipts[name]);
+    assert.equal(result.error, undefined);
+    assert.equal(result.valid, true);
+  });
+}
+
+test('pre-Byzantium receipts (state root instead of status) verify', async () => {
+  assert.ok(receipts.frontier[0].root);
+  assert.equal(receipts.frontier[0].status, undefined);
+  assert.equal((await verifyReceiptsRoot(full.frontier, receipts.frontier)).valid, true);
+});
+
+test('an empty block has the empty-trie receipts root', async () => {
+  assert.equal((await verifyReceiptsRoot(genesis, [])).valid, true);
+});
+
+test('receipts are ordered by transactionIndex before hashing', async () => {
+  const shuffled = [...receipts.accessList].reverse();
+  assert.equal((await verifyReceiptsRoot(full.accessList, shuffled)).valid, true);
+});
+
+test('tampering with a receipt is detected', async () => {
+  const name = 'allModernTypes';
+  const withLogs = receipts[name].findIndex((r) => r.logs.length > 0);
+  const edits = {
+    status: (r) => { r[0].status = '0x0'; },
+    cumulativeGasUsed: (r) => { r[0].cumulativeGasUsed = bump(r[0].cumulativeGasUsed); },
+    logData: (r) => { r[withLogs].logs[0].data = '0x01'; },
+    logTopic: (r) => { r[withLogs].logs[0].topics[0] = `0x${'11'.repeat(32)}`; },
+    droppedLog: (r) => { r[withLogs].logs.pop(); },
+    type: (r) => { r[0].type = r[0].type === '0x2' ? '0x0' : '0x2'; },
+  };
+  for (const [what, edit] of Object.entries(edits)) {
+    const tampered = structuredClone(receipts[name]);
+    edit(tampered);
+    assertRootMismatch(await verifyReceiptsRoot(full[name], tampered), what);
+  }
+});
+
+test('a missing receipt is reported', async () => {
+  const result = await verifyReceiptsRoot(full.accessList, receipts.accessList.slice(1));
+  assert.equal(result.valid, false);
+  assert.match(result.error, /got 33 receipts for 34 transactions/);
+});
+
+test('status is encoded as 0x01 for success and empty bytes for failure', () => {
+  const statusOf = (status) => RLP.decode(encodeReceipt({ ...receipts.accessList[0], type: '0x0', status, logs: [] }))[0];
+  assert.deepEqual(statusOf('0x1'), Uint8Array.of(1));
+  assert.deepEqual(statusOf('0x0'), new Uint8Array());
+});
+
+test('fetchBlockReceipts uses eth_getBlockReceipts, or falls back per transaction', async () => {
+  const blk = full.accessList;
+  const byHash = new Map(receipts.accessList.map((r) => [r.transactionHash, r]));
+  const calls = [];
+
+  const modern = async (method, params) => (calls.push(method), receipts.accessList);
+  assert.equal((await fetchBlockReceipts(modern, blk)).length, 34);
+  assert.deepEqual(calls, ['eth_getBlockReceipts']);
+
+  calls.length = 0;
+  const legacy = async (method, params) => {
+    calls.push(method);
+    if (method === 'eth_getBlockReceipts') throw new Error('method not found');
+    return byHash.get(params[0]);
+  };
+  const fetched = await fetchBlockReceipts(legacy, blk);
+  assert.equal(calls.filter((m) => m === 'eth_getTransactionReceipt').length, 34);
+  assert.equal((await verifyReceiptsRoot(blk, fetched)).valid, true);
 });

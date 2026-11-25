@@ -1,8 +1,13 @@
 import 'dotenv/config';
 import Web3 from 'web3';
+import { createClient, DEFAULT_URL } from './rpc.js';
 
-export const providerUrl = process.env.WEB3_PROVIDER_URL || 'http://localhost:8545';
+export const providerUrl = process.env.WEB3_PROVIDER_URL || DEFAULT_URL;
 
+// Reads go through the JSON-RPC client, which returns raw responses and
+// retries rate limits with backoff. web3 is kept only for sending
+// transactions (scripts/check-local-node.js).
+const client = createClient(providerUrl);
 export const web3 = new Web3(providerUrl);
 
 /**
@@ -13,23 +18,21 @@ export const web3 = new Web3(providerUrl);
  *
  * @param {number|bigint|string} blockNumber a number or a tag like 'latest'
  */
-export async function getRawBlock(blockNumber, fullTransactions = false) {
-  const tag = typeof blockNumber === 'string' ? blockNumber : `0x${BigInt(blockNumber).toString(16)}`;
-  return web3.requestManager.send({
-    method: 'eth_getBlockByNumber',
-    params: [tag, fullTransactions],
-  });
+export function getRawBlock(blockNumber, fullTransactions = false) {
+  return client.getBlock(blockNumber, fullTransactions);
 }
 
 /** Fetch a block by hash straight from JSON-RPC (eth_getBlockByHash). See getRawBlock. */
-export async function getRawBlockByHash(blockHash, fullTransactions = false) {
-  return web3.requestManager.send({
-    method: 'eth_getBlockByHash',
-    params: [blockHash, fullTransactions],
-  });
+export function getRawBlockByHash(blockHash, fullTransactions = false) {
+  return client.getBlockByHash(blockHash, fullTransactions);
+}
+
+/** The latest block number, as a bigint. */
+export function getBlockNumber() {
+  return client.getBlockNumber();
 }
 
 /** Send a raw JSON-RPC request through the configured provider. */
 export function rawRequest(method, params = []) {
-  return web3.requestManager.send({ method, params });
+  return client.request(method, params);
 }

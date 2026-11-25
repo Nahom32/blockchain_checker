@@ -1,4 +1,4 @@
-import { web3, getRawBlock, getRawBlockByHash, rawRequest } from './src/provider.js';
+import { getBlockNumber, getRawBlock, getRawBlockByHash, rawRequest } from './src/provider.js';
 import { verifyFromCheckpoint, verifyRange } from './src/chain.js';
 import { checkBodyRoots, fetchBlockReceipts } from './src/body.js';
 import { parseRangeArgs, resolveRange } from './src/range.js';
@@ -45,7 +45,7 @@ function printBlock({ number, problems }) {
 }
 
 async function checkRange(args) {
-  const latest = await web3.eth.getBlockNumber();
+  const latest = await getBlockNumber();
   const { from, to } = resolveRange(args, latest);
   console.log(`Latest block number: ${latest}. Checking blocks ${from} to ${to}.`);
 

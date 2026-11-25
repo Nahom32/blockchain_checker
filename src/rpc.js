@@ -49,10 +49,81 @@ export function labelsFor(urls) {
   );
 }
 
-export function createClient(url, label = labelFor(url)) {
+export const DEFAULT_RETRY = {
+  retries: 8, // attempts after the first
+  baseDelayMs: 500,
+  maxDelayMs: 15_000, // cap for one wait, including a server's Retry-After
+};
+
+// Methods that only read, so repeating one is always safe.
+const READ_ONLY = /^(eth_get|eth_blockNumber$|eth_chainId$|eth_gasPrice$|eth_call$|eth_feeHistory$|net_version$|web3_clientVersion$)/;
+
+// JSON-RPC error codes providers use for rate limiting.
+const RATE_LIMIT_CODES = new Set([-32005, 429]);
+const RATE_LIMIT_MESSAGE = /rate.?limit|too many requests|limit exceeded/i;
+
+/** A failed attempt, tagged with whether repeating it is safe and useful. */
+class AttemptError extends Error {
+  constructor(message, { retry, retryAfterMs } = {}) {
+    super(message);
+    this.retry = retry; // 'always' (request was refused), 'read-only', or undefined (never)
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+const PERMANENT_NETWORK_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND']);
+
+/**
+ * Summarise a fetch() network error. Node puts the system error code on
+ * err.cause (or on each of cause.errors when several addresses were tried,
+ * e.g. localhost on IPv4 and IPv6). Errors with no code, such as fetch's
+ * "bad port" refusal, are not transient; request timeouts are.
+ */
+export function describeNetworkError(err) {
+  const cause = err.cause;
+  const code = cause?.code ?? cause?.errors?.find((e) => e.code)?.code;
+  if (err.name === 'TimeoutError') return { detail: 'timed out', transient: true };
+  if (code) return { detail: code, transient: !PERMANENT_NETWORK_CODES.has(code) };
+  return { detail: cause?.message || err.name, transient: false };
+}
+
+/** Retry-After as milliseconds: either seconds or an HTTP date. */
+export function parseRetryAfter(value, now = Date.now()) {
+  if (value == null || value === '') return undefined;
+  if (/^\d+(\.\d+)?$/.test(value.trim())) return Number(value) * 1000;
+  const date = Date.parse(value);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - now);
+}
+
+/** Exponential backoff with full jitter: random in [0, base * 2^attempt], capped. */
+export function backoffDelay(attempt, { baseDelayMs, maxDelayMs }, random = Math.random) {
+  return Math.min(maxDelayMs, random() * baseDelayMs * 2 ** attempt);
+}
+
+/**
+ * @param {string} url
+ * @param {string} [label] display name (never includes credentials)
+ * @param {object} [options]
+ * @param {Partial<typeof DEFAULT_RETRY>} [options.retry]
+ * @param {(info: { label, method, attempt, delayMs, reason }) => void} [options.onRetry]
+ * @param {(ms: number) => Promise<void>} [options.sleep] injectable for tests
+ * @param {() => number} [options.now] injectable clock for tests
+ */
+export function createClient(url, label = labelFor(url), options = {}) {
+  const retry = { ...DEFAULT_RETRY, ...options.retry };
+  const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const now = options.now ?? Date.now;
   let nextId = 0;
 
-  async function request(method, params = []) {
+  // When the provider rate-limits any request, every request to it waits
+  // until this time before its next attempt. Without it, concurrent requests
+  // back off independently and keep the limit tripped.
+  let pausedUntil = 0;
+  async function waitOutPause() {
+    for (let wait = pausedUntil - now(); wait > 0; wait = pausedUntil - now()) await sleep(wait);
+  }
+
+  async function attempt(method, params) {
     let response;
     try {
       response = await fetch(url, {
@@ -63,12 +134,66 @@ export function createClient(url, label = labelFor(url)) {
       });
     } catch (err) {
       // Network errors can echo the URL; report only the label.
-      throw new Error(`${label}: ${method} request failed (${err.cause?.code ?? err.name})`);
+      const { detail, transient } = describeNetworkError(err);
+      // A transient failure may or may not have reached the node, so only
+      // reads are retried. A refused connection or unknown host is not
+      // retried at all: nothing is listening, and waiting won't change that.
+      throw new AttemptError(`${label}: ${method} request failed (${detail})`, {
+        retry: transient ? 'read-only' : undefined,
+      });
     }
-    if (!response.ok) throw new Error(`${label}: ${method} returned HTTP ${response.status}`);
+
+    if (response.status === 429) {
+      throw new AttemptError(`${label}: ${method} returned HTTP 429`, {
+        retry: 'always',
+        retryAfterMs: parseRetryAfter(response.headers.get('retry-after')),
+      });
+    }
+    if (!response.ok) {
+      throw new AttemptError(`${label}: ${method} returned HTTP ${response.status}`, {
+        retry: [502, 503, 504].includes(response.status) ? 'read-only' : undefined,
+        retryAfterMs: parseRetryAfter(response.headers.get('retry-after')),
+      });
+    }
+
     const body = await response.json();
-    if (body.error) throw new Error(`${label}: ${method} failed: ${body.error.message}`);
+    if (body.error) {
+      const limited = RATE_LIMIT_CODES.has(body.error.code) || RATE_LIMIT_MESSAGE.test(body.error.message ?? '');
+      throw new AttemptError(`${label}: ${method} failed: ${body.error.message}`, {
+        retry: limited ? 'always' : undefined,
+      });
+    }
     return body.result;
+  }
+
+  /**
+   * Send one JSON-RPC request. Rate-limit responses are retried with
+   * exponential backoff (honoring Retry-After); gateway errors and network
+   * failures are retried only for read-only methods, since a write may
+   * already have been applied.
+   */
+  async function request(method, params = []) {
+    for (let n = 0; ; n++) {
+      await waitOutPause();
+      try {
+        return await attempt(method, params);
+      } catch (err) {
+        const retryable = err.retry === 'always' || (err.retry === 'read-only' && READ_ONLY.test(method));
+        if (!retryable || n >= retry.retries) {
+          const suffix = retryable && n > 0 ? ` (gave up after ${n} ${n === 1 ? 'retry' : 'retries'})` : '';
+          throw new Error(`${err.message}${suffix}`);
+        }
+        const delayMs = Math.min(retry.maxDelayMs, err.retryAfterMs ?? backoffDelay(n, retry));
+        options.onRetry?.({ label, method, attempt: n + 1, delayMs, reason: err.message });
+        if (err.retry === 'always') {
+          // Rate limited: pause the whole client, not just this request.
+          pausedUntil = Math.max(pausedUntil, now() + delayMs);
+          await waitOutPause();
+        } else {
+          await sleep(delayMs);
+        }
+      }
+    }
   }
 
   return {

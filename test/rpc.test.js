@@ -1,7 +1,10 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { clientsFromEnv, createClient, labelFor, labelsFor, providerUrlsFromEnv } from '../src/rpc.js';
+import {
+  backoffDelay, clientsFromEnv, createClient, DEFAULT_RETRY, describeNetworkError, labelFor, labelsFor, parseRetryAfter,
+  providerUrlsFromEnv,
+} from '../src/rpc.js';
 
 test('WEB3_PROVIDER_URLS is split on commas, trimmed and deduplicated', () => {
   const env = { WEB3_PROVIDER_URLS: ' https://a.example/v1/KEY , https://b.example ,,https://a.example/v1/KEY' };
@@ -40,6 +43,8 @@ test('labels are numbered when providers share a host', () => {
 });
 
 // --- client against a fake JSON-RPC server ---------------------------------
+
+const noRetry = { retry: { retries: 0 } };
 
 let server;
 let baseUrl;
@@ -82,7 +87,7 @@ test('the client sends raw JSON-RPC requests and returns results', async () => {
 });
 
 test('RPC and HTTP errors name the provider by label only', async () => {
-  const client = createClient(`${baseUrl}/http-error?key=SECRET`, 'node-a');
+  const client = createClient(`${baseUrl}/http-error?key=SECRET`, 'node-a', noRetry);
   await assert.rejects(client.getBlockNumber(), /^Error: node-a: eth_blockNumber returned HTTP 503$/);
 
   const other = createClient(`${baseUrl}/rpc`, 'node-b');
@@ -90,10 +95,264 @@ test('RPC and HTTP errors name the provider by label only', async () => {
 });
 
 test('network failures do not leak the URL', async () => {
-  const client = createClient('http://127.0.0.1:1/SECRET', 'down');
+  const client = createClient('http://127.0.0.1:1/SECRET', 'down', noRetry);
   await assert.rejects(client.getBlockNumber(), (err) => {
     assert.match(err.message, /^down: eth_blockNumber request failed/);
     assert.doesNotMatch(err.message, /SECRET/);
     return true;
   });
+});
+
+// --- retries ----------------------------------------------------------------
+
+test('backoff grows exponentially with full jitter and is capped', () => {
+  const opts = { baseDelayMs: 100, maxDelayMs: 1000 };
+  assert.equal(backoffDelay(0, opts, () => 1), 100);
+  assert.equal(backoffDelay(3, opts, () => 1), 800);
+  assert.equal(backoffDelay(10, opts, () => 1), 1000);
+  assert.equal(backoffDelay(3, opts, () => 0), 0);
+  assert.equal(backoffDelay(3, opts, () => 0.5), 400);
+});
+
+test('Retry-After is read as seconds or an HTTP date', () => {
+  assert.equal(parseRetryAfter('2'), 2000);
+  assert.equal(parseRetryAfter('0.5'), 500);
+  const now = Date.parse('2026-01-01T00:00:00Z');
+  assert.equal(parseRetryAfter('Thu, 01 Jan 2026 00:00:03 GMT', now), 3000);
+  assert.equal(parseRetryAfter('Wed, 31 Dec 2025 23:59:00 GMT', now), 0); // in the past
+  assert.equal(parseRetryAfter('soon'), undefined);
+  assert.equal(parseRetryAfter(null), undefined);
+});
+
+/** A server that answers each request with the next scripted response. */
+async function scriptedServer(script) {
+  const seen = [];
+  const srv = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      const { id, method } = JSON.parse(body);
+      seen.push(method);
+      const step = script[Math.min(seen.length - 1, script.length - 1)];
+      const payload = step.error ? { error: step.error } : { result: step.result ?? '0x1' };
+      res.writeHead(step.status ?? 200, { 'content-type': 'application/json', ...step.headers });
+      res.end(step.status && step.status !== 200 ? '' : JSON.stringify({ jsonrpc: '2.0', id, ...payload }));
+    });
+  });
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  return { url: `http://127.0.0.1:${srv.address().port}`, seen, close: () => srv.close() };
+}
+
+/** A client with a fake clock: sleeping advances time instantly. */
+function retryingClient(url, extra = {}) {
+  const sleeps = [];
+  const retries = [];
+  let clock = 1_000_000;
+  const client = createClient(url, 'node', {
+    retry: { retries: 3, baseDelayMs: 100, maxDelayMs: 1000, ...extra },
+    now: () => clock,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      clock += ms;
+    },
+    onRetry: (info) => retries.push(info),
+  });
+  return { client, sleeps, retries };
+}
+
+test('HTTP 429 is retried with backoff until it succeeds', async () => {
+  const server = await scriptedServer([{ status: 429 }, { status: 429 }, { result: '0x2a' }]);
+  try {
+    const { client, sleeps, retries } = retryingClient(server.url);
+    assert.equal(await client.getBlockNumber(), 42n);
+    assert.equal(server.seen.length, 3);
+    assert.equal(sleeps.length, 2);
+    assert.ok(sleeps[0] <= 100 && sleeps[1] <= 200, `delays ${sleeps}`);
+    assert.deepEqual(retries.map((r) => [r.attempt, r.method]), [[1, 'eth_blockNumber'], [2, 'eth_blockNumber']]);
+    assert.match(retries[0].reason, /HTTP 429/);
+  } finally {
+    server.close();
+  }
+});
+
+test('Retry-After is honored, but capped at maxDelayMs', async () => {
+  const server = await scriptedServer([
+    { status: 429, headers: { 'retry-after': '0.3' } },
+    { status: 429, headers: { 'retry-after': '120' } },
+    { result: '0x1' },
+  ]);
+  try {
+    const { client, sleeps } = retryingClient(server.url);
+    await client.getBlockNumber();
+    assert.deepEqual(sleeps, [300, 1000]);
+  } finally {
+    server.close();
+  }
+});
+
+test('JSON-RPC rate-limit errors are retried', async () => {
+  const server = await scriptedServer([
+    { error: { code: -32005, message: 'limit exceeded' } },
+    { error: { code: -32000, message: 'Too Many Requests, slow down' } },
+    { result: '0x1' },
+  ]);
+  try {
+    const { client } = retryingClient(server.url);
+    assert.equal(await client.getBlockNumber(), 1n);
+    assert.equal(server.seen.length, 3);
+  } finally {
+    server.close();
+  }
+});
+
+test('gateway errors are retried for reads but never for writes', async () => {
+  const server = await scriptedServer([{ status: 503 }, { result: '0x1' }]);
+  try {
+    const { client } = retryingClient(server.url);
+    assert.equal(await client.getBlockNumber(), 1n);
+    assert.deepEqual(server.seen, ['eth_blockNumber', 'eth_blockNumber']);
+  } finally {
+    server.close();
+  }
+
+  const writeServer = await scriptedServer([{ status: 503 }, { result: '0xhash' }]);
+  try {
+    const { client } = retryingClient(writeServer.url);
+    await assert.rejects(client.request('eth_sendRawTransaction', ['0x00']), /^Error: node: eth_sendRawTransaction returned HTTP 503$/);
+    assert.equal(writeServer.seen.length, 1, 'a write must not be sent twice');
+  } finally {
+    writeServer.close();
+  }
+});
+
+test('a rate-limited write is retried (429 means it was refused, not applied)', async () => {
+  const server = await scriptedServer([{ status: 429 }, { result: '0xhash' }]);
+  try {
+    const { client } = retryingClient(server.url);
+    assert.equal(await client.request('eth_sendRawTransaction', ['0x00']), '0xhash');
+  } finally {
+    server.close();
+  }
+});
+
+test('other errors are not retried', async () => {
+  for (const step of [{ status: 400 }, { status: 500 }, { error: { code: -32601, message: 'method not found' } }]) {
+    const server = await scriptedServer([step, { result: '0x1' }]);
+    try {
+      const { client, sleeps } = retryingClient(server.url);
+      await assert.rejects(client.getBlockNumber());
+      assert.equal(server.seen.length, 1, `${JSON.stringify(step)} was retried`);
+      assert.deepEqual(sleeps, []);
+    } finally {
+      server.close();
+    }
+  }
+});
+
+test('it gives up after the configured retries and says so', async () => {
+  const server = await scriptedServer([{ status: 429 }]);
+  try {
+    const { client, sleeps } = retryingClient(server.url, { retries: 2 });
+    await assert.rejects(client.getBlockNumber(), /^Error: node: eth_blockNumber returned HTTP 429 \(gave up after 2 retries\)$/);
+    assert.equal(server.seen.length, 3);
+    assert.equal(sleeps.length, 2);
+  } finally {
+    server.close();
+  }
+});
+
+/** A server that accepts connections and immediately drops them. */
+async function droppingServer() {
+  let connections = 0;
+  const srv = createServer();
+  srv.on('connection', (socket) => {
+    connections++;
+    socket.destroy();
+  });
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  return { url: `http://127.0.0.1:${srv.address().port}/`, connections: () => connections, close: () => srv.close() };
+}
+
+/** A local port with nothing listening on it. */
+async function closedPortUrl() {
+  const srv = createServer();
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  const { port } = srv.address();
+  await new Promise((resolve) => srv.close(resolve));
+  return `http://127.0.0.1:${port}/`;
+}
+
+test('dropped connections are retried for reads only', async () => {
+  const server = await droppingServer();
+  try {
+    const reader = retryingClient(server.url, { retries: 2 });
+    await assert.rejects(reader.client.getBlockNumber(), /request failed \(\w+\) \(gave up after 2 retries\)$/);
+    assert.equal(reader.retries.length, 2);
+
+    const before = server.connections();
+    const writer = retryingClient(server.url, { retries: 2 });
+    await assert.rejects(writer.client.request('eth_sendRawTransaction', ['0x00']), /request failed \(\w+\)$/);
+    assert.equal(writer.retries.length, 0);
+    assert.equal(server.connections() - before, 1, 'a write must not be sent twice');
+  } finally {
+    server.close();
+  }
+});
+
+test('a refused connection fails at once instead of retrying', async () => {
+  const { client, retries, sleeps } = retryingClient(await closedPortUrl(), { retries: 5 });
+  await assert.rejects(client.getBlockNumber(), /^Error: node: eth_blockNumber request failed \(ECONNREFUSED\)$/);
+  assert.equal(retries.length, 0);
+  assert.deepEqual(sleeps, []);
+});
+
+test('network errors are classified as transient or permanent', () => {
+  const withCause = (cause, name = 'TypeError') => Object.assign(new Error('fetch failed'), { name, cause });
+  assert.deepEqual(describeNetworkError(withCause({ code: 'ECONNRESET' })), { detail: 'ECONNRESET', transient: true });
+  assert.deepEqual(describeNetworkError(withCause({ code: 'ECONNREFUSED' })), { detail: 'ECONNREFUSED', transient: false });
+  assert.deepEqual(describeNetworkError(withCause({ code: 'ENOTFOUND' })), { detail: 'ENOTFOUND', transient: false });
+  // localhost tries IPv4 and IPv6; the codes are on cause.errors
+  assert.deepEqual(
+    describeNetworkError(withCause({ errors: [{ code: 'ECONNREFUSED' }, { code: 'ECONNREFUSED' }] })),
+    { detail: 'ECONNREFUSED', transient: false },
+  );
+  assert.deepEqual(describeNetworkError(withCause({ message: 'bad port' })), { detail: 'bad port', transient: false });
+  assert.deepEqual(describeNetworkError(withCause(undefined, 'TimeoutError')), { detail: 'timed out', transient: true });
+});
+
+test('the default retry settings are bounded', () => {
+  assert.deepEqual(DEFAULT_RETRY, { retries: 8, baseDelayMs: 500, maxDelayMs: 15000 });
+});
+
+test('a rate limit pauses every request to that provider, not just the one that hit it', async () => {
+  // The first request is rate-limited with Retry-After: 1s. Requests started
+  // during the pause must wait it out instead of hitting the server.
+  const server = await scriptedServer([{ status: 429, headers: { 'retry-after': '1' } }, { result: '0x1' }]);
+  let clock = 1_000_000;
+  const held = []; // sleeps stay pending until the test advances the clock
+  const client = createClient(server.url, 'node', {
+    retry: { retries: 3, baseDelayMs: 100, maxDelayMs: 5000 },
+    now: () => clock,
+    sleep: (ms) => new Promise((resolve) => held.push({ ms, resolve })),
+  });
+  const until = async (condition) => {
+    for (let i = 0; i < 200 && !condition(); i++) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(condition(), 'timed out waiting');
+  };
+  try {
+    const first = client.getBlockNumber();
+    await until(() => held.length === 1); // the 429 arrived; the client is paused
+    assert.equal(held[0].ms, 1000);
+
+    const others = [client.getBlockNumber(), client.getBlockNumber()];
+    await until(() => held.length === 3); // both new requests are waiting too
+    assert.equal(server.seen.length, 1, 'no request may reach the server during the pause');
+
+    clock += 1000;
+    for (const { resolve } of held.splice(0)) resolve();
+    assert.deepEqual(await Promise.all([first, ...others]), [1n, 1n, 1n]);
+    assert.equal(server.seen.length, 4); // the one 429, then one attempt each
+  } finally {
+    server.close();
+  }
 });

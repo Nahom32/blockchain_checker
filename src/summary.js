@@ -23,12 +23,18 @@ const KIND_LABELS = {
   other: ['other problem', 'other problems'],
 };
 
-/** e.g. "1 header hash mismatch, 2 broken links" for a list of failed blocks. */
-export function failureBreakdown(failed) {
+/** Failed blocks per kind of problem, e.g. { header: 1, link: 2 }. */
+export function failureCounts(failed) {
   const counts = {};
   for (const { problems } of failed) {
     for (const kind of new Set(problems.map(classifyProblem))) counts[kind] = (counts[kind] ?? 0) + 1;
   }
+  return counts;
+}
+
+/** e.g. "1 header hash mismatch, 2 broken links" for a list of failed blocks. */
+export function failureBreakdown(failed) {
+  const counts = failureCounts(failed);
   return Object.keys(KIND_LABELS)
     .filter((kind) => counts[kind])
     .map((kind) => `${counts[kind]} ${KIND_LABELS[kind][counts[kind] === 1 ? 0 : 1]}`)
@@ -48,6 +54,8 @@ export function retryCounter() {
     describe: () =>
       [...counts].map(([label, n]) => `${label} retried ${n} ${n === 1 ? 'request' : 'requests'}`).join(', '),
     total: () => [...counts.values()].reduce((a, b) => a + b, 0),
+    /** e.g. { 'eth.drpc.org': 12 } */
+    byProvider: () => Object.fromEntries(counts),
   };
 }
 
@@ -58,3 +66,14 @@ export function detailsLine({ from, to, elapsedMs, retries }) {
   if (retried) parts.push(retried);
   return `  ${parts.join('; ')}.`;
 }
+
+/**
+ * A JSON report as text. Block numbers are bigints internally; they are
+ * written as plain numbers (Ethereum block numbers are far below 2^53).
+ */
+export function toJson(report) {
+  return `${JSON.stringify(report, (_, value) => (typeof value === 'bigint' ? Number(value) : value), 2)}\n`;
+}
+
+/** A printer that prints nothing, for --json mode (the report is printed instead). */
+export const silent = { log() {}, error() {}, block() {} };

@@ -218,3 +218,91 @@ test('check-local only takes --verbose', async () => {
   assert.equal(code, 3);
   assert.match(stderr, /Unknown option '--last'/);
 });
+
+// --- --json -------------------------------------------------------------------
+
+const parse = (stdout) => {
+  const report = JSON.parse(stdout); // stdout must be exactly one JSON document
+  return report;
+};
+
+test('verify --json prints only a JSON report', async () => {
+  const { code, stdout, stderr } = await cli(['verify', '--from', '0', '--json']);
+  assert.equal(code, 0);
+  assert.equal(stderr, '');
+  const report = parse(stdout);
+  assert.equal(report.command, 'verify');
+  assert.equal(report.mode, 'range');
+  assert.deepEqual(report.range, { from: 0, to: 5 });
+  assert.equal(report.checked, 6);
+  assert.equal(report.valid, 6);
+  assert.deepEqual(report.failed, []);
+  assert.equal(report.exitCode, 0);
+  assert.equal(typeof report.elapsedMs, 'number');
+});
+
+test('verify --json lists each failure with its kind', async () => {
+  const { code, stdout } = await cli(['verify', '--full', '--from', '0', '--json']);
+  assert.equal(code, 1);
+  const report = parse(stdout);
+  assert.equal(report.exitCode, 1);
+  assert.equal(report.full, true);
+  assert.equal(report.failed.length, 1);
+  assert.equal(report.failed[0].block, 0);
+  assert.equal(report.failed[0].problems[0].kind, 'body');
+  assert.match(report.failed[0].problems[0].message, /^transactions root mismatch/);
+  assert.deepEqual(report.failuresByKind, { body: 1 });
+});
+
+test('verify --json reports a checkpoint run and a broken chain of trust', async () => {
+  const head = await chain.rpc('eth_getBlockByNumber', ['latest', false]);
+  const ok = parse((await cli(['verify', '--checkpoint', head.hash, '--from', '0', '--json'])).stdout);
+  assert.equal(ok.mode, 'checkpoint');
+  assert.equal(ok.brokenAt, null);
+  assert.equal(ok.checked, 6);
+
+  const missing = parse((await cli(['verify', '--checkpoint', `0x${'ab'.repeat(32)}`, '--json'])).stdout);
+  assert.equal(missing.exitCode, 1);
+  assert.match(missing.error, /no block with the checkpoint hash/);
+});
+
+test('argument errors are JSON too in --json mode', async () => {
+  const { code, stdout } = await cli(['verify', '--json', '--bogus']);
+  assert.equal(code, 3);
+  const report = parse(stdout);
+  assert.equal(report.exitCode, 3);
+  assert.match(report.error, /Unknown option '--bogus'/);
+});
+
+test('compare --json reports providers, disagreements and responses', async () => {
+  const liar = await lyingProvider(3n);
+  try {
+    const { code, stdout, stderr } = await cli(['compare', '--from', '0', '--json'], {
+      WEB3_PROVIDER_URLS: `${chain.url},${liar.url}`,
+    });
+    assert.equal(code, 1);
+    assert.equal(stderr, '');
+    const report = parse(stdout);
+    assert.equal(report.command, 'compare');
+    assert.equal(report.providers.length, 2);
+    assert.deepEqual(report.counts, { conflict: 1, unfinalized: 0, incomplete: 0 });
+    assert.equal(report.agree, 5);
+    const [d] = report.disagreements;
+    assert.equal(d.block, 3);
+    assert.equal(d.kind, 'conflict');
+    assert.equal(d.responses.length, 2);
+    assert.notEqual(d.responses[0].hash, d.responses[1].hash);
+    assert.ok(d.responses.every((r) => r.provider && r.valid === true));
+  } finally {
+    await liar.close();
+  }
+});
+
+test('compare --json records skipped providers', async () => {
+  const { code, stdout } = await cli(['compare', '--json'], { WEB3_PROVIDER_URLS: `${chain.url},${await closedPortUrl()}` });
+  assert.equal(code, 3);
+  const report = parse(stdout);
+  assert.equal(report.skipped.length, 1);
+  assert.match(report.skipped[0].error, /ECONNREFUSED/);
+  assert.match(report.error, /Need at least 2 reachable providers/);
+});

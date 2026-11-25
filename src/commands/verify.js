@@ -4,7 +4,9 @@ import { checkBodyRoots, fetchBlockReceipts } from '../body.js';
 import { parseOptions, resolveRange } from '../args.js';
 import { printer } from '../output.js';
 import { EXIT } from '../exit.js';
-import { detailsLine, failureBreakdown, retryCounter } from '../summary.js';
+import {
+  classifyProblem, detailsLine, failureBreakdown, failureCounts, retryCounter, silent, toJson,
+} from '../summary.js';
 
 export const summary = "check blocks' hashes and links on one node";
 
@@ -25,11 +27,12 @@ Range (default: the last 100 blocks):
                          withdrawals roots (slower: fetches full blocks)
   --concurrency N        block requests in flight (default 10)
   --verbose              also list every valid block, not just problems
+  --json                 print one machine-readable JSON report instead
 
 Exit code: 0 all valid, 1 problems found (including a node that doesn't
 have the checkpoint block), 3 couldn't run.`;
 
-const OPTIONS = ['from', 'to', 'last', 'checkpoint', 'concurrency', 'full', 'verbose'];
+const OPTIONS = ['from', 'to', 'last', 'checkpoint', 'concurrency', 'full', 'verbose', 'json'];
 
 /**
  * Block fetching for the chosen mode. With --full, each fetch also gets the
@@ -56,10 +59,25 @@ function fetching(client, args) {
   };
 }
 
-/** Lines under the one-line summary: failures by kind, range, time, retries. */
-function printDetails(print, { failed, from, to, started, retries }) {
+/**
+ * Lines under the one-line summary (failures by kind, range, time, retries),
+ * and the same facts in the JSON report.
+ */
+function printDetails(print, { failed, from, to, started, retries, report }) {
+  const elapsedMs = Date.now() - started;
   if (failed.length > 0) print.log(`  Failures: ${failureBreakdown(failed)}.`);
-  print.log(detailsLine({ from, to, elapsedMs: Date.now() - started, retries }));
+  print.log(detailsLine({ from, to, elapsedMs, retries }));
+
+  Object.assign(report, {
+    range: { from, to },
+    failed: failed.map(({ number, problems }) => ({
+      block: number,
+      problems: problems.map((message) => ({ kind: classifyProblem(message), message })),
+    })),
+    failuresByKind: failureCounts(failed),
+    elapsedMs,
+    retries: retries.byProvider(),
+  });
 }
 
 async function checkRange(client, args, print, run) {
@@ -73,6 +91,7 @@ async function checkRange(client, args, print, run) {
   });
 
   print.log(`\nChecked ${checked} blocks: ${checked - failed.length} valid, ${failed.length} failed.`);
+  Object.assign(run.report, { mode: 'range', latest, checked, valid: checked - failed.length });
   printDetails(print, { failed, from, to, ...run });
   return failed.length === 0;
 }
@@ -80,8 +99,10 @@ async function checkRange(client, args, print, run) {
 async function checkFromCheckpoint(client, args, print, run) {
   const { fetchBlock, fetchByHash, checkBody } = fetching(client, args);
   const checkpointBlock = await fetchByHash(args.checkpoint);
+  Object.assign(run.report, { mode: 'checkpoint', checkpoint: args.checkpoint });
   if (!checkpointBlock) {
     print.error(`The node has no block with hash ${args.checkpoint}.`);
+    run.report.error = 'the node has no block with the checkpoint hash';
     return false;
   }
 
@@ -98,9 +119,11 @@ async function checkFromCheckpoint(client, args, print, run) {
     concurrency: args.concurrency,
   });
 
+  Object.assign(run.report, { checked, valid: checked - failed.length, brokenAt });
   if (brokenAt !== null) {
     print.error(`\nChain of trust broken at block ${brokenAt}; blocks ${from} to ${brokenAt} are not verified.`);
     printDetails(print, { failed, from: brokenAt, to, ...run });
+    run.report.unverified = { from, to: brokenAt };
     return false;
   }
   print.log(`\nAll ${checked} blocks (${from} to ${to}) are tied to the checkpoint.`);
@@ -111,28 +134,39 @@ async function checkFromCheckpoint(client, args, print, run) {
 
 /** @param {string[]} argv @param {import('../output.js').IO} io @returns {Promise<number>} exit code */
 export async function run(argv, io) {
-  const print = printer(io);
-  let verbose = false;
-  print.block = ({ number, problems }) => {
-    if (problems.length === 0) {
-      if (verbose) print.log(`Block ${number} is valid.`);
-    } else {
-      print.error(`Block ${number} FAILED:`);
-      for (const problem of problems) print.error(`  - ${problem}`);
-    }
+  // Known before parsing, so even an argument error is reported as JSON.
+  const json = argv.includes('--json');
+  const print = json ? { ...silent } : printer(io);
+  const report = { command: 'verify' };
+  const finish = (exitCode) => {
+    if (json) io.out.write(toJson({ ...report, exitCode }));
+    return exitCode;
   };
+  let verbose = false;
+  if (!json) {
+    print.block = ({ number, problems }) => {
+      if (problems.length === 0) {
+        if (verbose) print.log(`Block ${number} is valid.`);
+      } else {
+        print.error(`Block ${number} FAILED:`);
+        for (const problem of problems) print.error(`  - ${problem}`);
+      }
+    };
+  }
 
   try {
     const args = parseOptions(argv, OPTIONS);
     verbose = Boolean(args.verbose);
-    const run = { started: Date.now(), retries: retryCounter() };
+    const run = { started: Date.now(), retries: retryCounter(), report };
     const client = createClient(io.env.WEB3_PROVIDER_URL || DEFAULT_URL, undefined, { onRetry: run.retries.onRetry });
+    Object.assign(report, { provider: client.label, full: Boolean(args.full) });
     const ok = args.checkpoint
       ? await checkFromCheckpoint(client, args, print, run)
       : await checkRange(client, args, print, run);
-    return ok ? EXIT.OK : EXIT.PROBLEMS;
+    return finish(ok ? EXIT.OK : EXIT.PROBLEMS);
   } catch (error) {
     print.error(`Error verifying blockchain integrity: ${error.message ?? error}`);
-    return EXIT.ERROR;
+    report.error = error.message ?? String(error);
+    return finish(EXIT.ERROR);
   }
 }

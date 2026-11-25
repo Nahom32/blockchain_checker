@@ -45,3 +45,9 @@ test('--checkpoint is parsed and validated', () => {
   assert.throws(() => parseRangeArgs(['--checkpoint', '0x1234']), /32-byte block hash/);
   assert.throws(() => parseRangeArgs(['--checkpoint', hash, '--to', '5']), /do not combine it with --to/);
 });
+
+test('--concurrency is parsed and validated', () => {
+  assert.deepEqual(parseRangeArgs(['--concurrency', '4']), { concurrency: 4 });
+  assert.throws(() => parseRangeArgs(['--concurrency', '0']), /at least 1/);
+  assert.throws(() => parseRangeArgs(['--concurrency', 'x']), /non-negative integer/);
+});

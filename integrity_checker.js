@@ -10,6 +10,7 @@ import { parseRangeArgs, resolveRange } from './src/range.js';
 //     Verify backward from a block hash you trust (e.g. a finalized block from
 //     a block explorer). Every verified block is tied to that hash, so the node
 //     itself does not need to be trusted.
+//   Either mode accepts --concurrency N: max block requests in flight (default 10).
 
 function printBlock({ number, problems }) {
   if (problems.length === 0) {
@@ -25,7 +26,9 @@ async function checkRange(args) {
   const { from, to } = resolveRange(args, latest);
   console.log(`Latest block number: ${latest}. Checking blocks ${from} to ${to}.`);
 
-  const { checked, failed } = await verifyRange({ from, to, fetchBlock: getRawBlock, onBlock: printBlock });
+  const { checked, failed } = await verifyRange({
+    from, to, fetchBlock: getRawBlock, onBlock: printBlock, concurrency: args.concurrency,
+  });
 
   console.log(`\nChecked ${checked} blocks: ${checked - failed.length} valid, ${failed.length} failed.`);
   return failed.length === 0;
@@ -47,6 +50,7 @@ async function checkFromCheckpoint(args) {
     from,
     fetchBlock: getRawBlock,
     onBlock: printBlock,
+    concurrency: args.concurrency,
   });
 
   if (brokenAt === null) {

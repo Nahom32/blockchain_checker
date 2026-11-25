@@ -1,4 +1,5 @@
 import { verifyHeaderHash } from './header.js';
+import { ascending, descending, fetchInOrder } from './fetch.js';
 
 const ZERO_HASH = '0x' + '0'.repeat(64);
 
@@ -51,15 +52,15 @@ export function checkBlock(block, parent) {
  * @param {bigint} opts.to
  * @param {(n: bigint) => Promise<object|null>} opts.fetchBlock raw block fetcher
  * @param {(result: ReturnType<typeof checkBlock>) => void} [opts.onBlock] progress callback
+ * @param {number} [opts.concurrency] max requests in flight (see fetchInOrder)
  * @returns {Promise<{ checked: number, failed: ReturnType<typeof checkBlock>[] }>}
  */
-export async function verifyRange({ from, to, fetchBlock, onBlock }) {
+export async function verifyRange({ from, to, fetchBlock, onBlock, concurrency }) {
   const failed = [];
   let checked = 0;
   let parent = null;
 
-  for (let n = from; n <= to; n++) {
-    const block = await fetchBlock(n);
+  for await (const [n, block] of fetchInOrder(ascending(from, to), fetchBlock, concurrency)) {
     const result = block
       ? checkBlock(block, parent)
       : { number: n, hash: null, problems: ['block not found'] };
@@ -87,14 +88,17 @@ export async function verifyRange({ from, to, fetchBlock, onBlock }) {
  * @param {bigint} opts.from lowest block number to verify
  * @param {(n: bigint) => Promise<object|null>} opts.fetchBlock
  * @param {(result: object) => void} [opts.onBlock]
+ * @param {number} [opts.concurrency] max requests in flight (see fetchInOrder)
  * @returns {Promise<{ checked: number, failed: object[], brokenAt: bigint | null }>}
  */
-export async function verifyFromCheckpoint({ checkpointHash, checkpointBlock, from, fetchBlock, onBlock }) {
+export async function verifyFromCheckpoint({ checkpointHash, checkpointBlock, from, fetchBlock, onBlock, concurrency }) {
   let trustedHash = checkpointHash.toLowerCase();
   let checked = 0;
 
-  for (let n = BigInt(checkpointBlock.number); n >= from; n--) {
-    const block = checked === 0 ? checkpointBlock : await fetchBlock(n);
+  const top = BigInt(checkpointBlock.number);
+  const fetchOrReuse = (n) => (n === top ? Promise.resolve(checkpointBlock) : fetchBlock(n));
+
+  for await (const [n, block] of fetchInOrder(descending(top, from), fetchOrReuse, concurrency)) {
     const problems = [];
     let hash = null;
 
